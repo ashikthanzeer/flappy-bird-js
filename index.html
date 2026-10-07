@@ -3,17 +3,26 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#70c5ce">
     <title>Kathikalle Umma - Flappy Bird</title>
     <style>
-        canvas{
-            border: 1px solid black;
-            display: block;
-            margin: 0px auto;
-        }
+        * { margin: 0; padding: 0; box-sizing: border-box; touch-action: manipulation; }
+        html, body { width: 100%; height: 100%; overflow: hidden; background: #333; }
+        body { display: flex; justify-content: center; align-items: center; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        #game-wrapper { position: relative; width: min(100vw, 480px, calc(100vh * 2 / 3)); width: min(100vw, 480px, calc(100dvh * 2 / 3)); aspect-ratio: 2 / 3; overflow: hidden; background: linear-gradient(180deg, #70c5ce 0%, #4a9aaa 100%); }
+        canvas { display: block; width: 100%; height: 100%; border: none; image-rendering: pixelated; image-rendering: crisp-edges; }
+        #badge-panel { position: absolute; top: 10px; left: 10px; display: flex; gap: 6px; pointer-events: none; z-index: 10; }
+        .badge-icon { width: 28px; height: 28px; border-radius: 50%; border: 2px solid rgba(255,255,255,0.8); box-shadow: 0 2px 4px rgba(0,0,0,0.3); opacity: 0.4; transition: opacity 0.3s; }
+        .badge-icon.active { opacity: 1; }
+        #controls-hint { position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); color: white; font-size: 14px; text-align: center; opacity: 0.8; pointer-events: none; text-shadow: 0 1px 2px rgba(0,0,0,0.5); }
     </style>
 </head>
 <body>
-    <canvas id="mycanvas" width="320" height="480"></canvas>
+    <div id="game-wrapper">
+        <canvas id="mycanvas" width="320" height="480"></canvas>
+        <div id="badge-panel" aria-label="Achievement badges"></div>
+        <div id="controls-hint">Tap or Press Space</div>
+    </div>
     <script src="flappy.js"></script>
 </body>
 </html>
