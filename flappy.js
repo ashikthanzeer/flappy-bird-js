@@ -118,6 +118,7 @@ function clickHandler() {
       pipes.position = [];
       pipes.spawnTimer = 0;
       score.value = 0;
+      score.finishedRunCalled = false;
       state.current = state.getReady;
       break;
   }
@@ -195,6 +196,48 @@ let gameOver = {
   }
 };
 
+function finishRun(finalScore) {
+  if (score.finishedRunCalled) return;
+  score.finishedRunCalled = true;
+  score.best = Math.max(finalScore, score.best);
+  localStorage.setItem("best", score.best);
+  // Generate a run ID for duplicate protection
+  const runId = Date.now() + '-' + Math.random().toString(36).slice(2);
+  localStorage.setItem("lb_last_run_id", runId);
+
+  if (window.Leaderboard && typeof window.Leaderboard.submitRun === 'function') {
+    window.Leaderboard.submitRun(finalScore).then(function (res) {
+      var msg = 'Submitted!';
+      var sub = '';
+      if (res && res.duplicate) {
+        msg = 'Score saved (duplicate prevented)';
+      } else if (res && res.success) {
+        msg = 'Score submitted!';
+      } else if (res && res.offline) {
+        msg = 'Offline - saved locally';
+        sub = 'Will retry when online';
+      } else if (res && res.error) {
+        msg = 'Submission failed';
+        sub = res.error;
+      } else {
+        msg = 'Not submitted';
+      }
+      // Update UI through the game-status element
+      var statusEl = document.getElementById('game-status');
+      if (statusEl) {
+        var textEl = statusEl.querySelector('.status-text');
+        var subEl = statusEl.querySelector('.status-sub');
+        if (textEl) textEl.textContent = msg;
+        if (subEl) subEl.textContent = sub || '';
+        statusEl.classList.add('active');
+        setTimeout(function () { statusEl.classList.remove('active'); }, 3500);
+      }
+    }).catch(function (e) {
+      console.warn('Submission error:', e);
+    });
+  }
+}
+
 let bird = {
   animation: [
     { sX: 276, sY: 112 },
@@ -241,12 +284,14 @@ let bird = {
       if (state.current === state.game) {
         DIE.play();
         state.current = state.over;
+        finishRun(score.value);
       }
     }
     if (state.current === state.game && this.y - this.radius <= 0) {
       this.y = this.radius;
       DIE.play();
       state.current = state.over;
+      finishRun(score.value);
     }
   },
   flap: function () {
@@ -296,6 +341,7 @@ let pipes = {
       ) {
         HIT.play();
         state.current = state.over;
+        finishRun(score.value);
       }
       if (
         bird.x + bird.radius > p.x &&
@@ -304,6 +350,7 @@ let pipes = {
       ) {
         HIT.play();
         state.current = state.over;
+        finishRun(score.value);
       }
 
       if (p.x + this.w <= 0) {
@@ -320,6 +367,7 @@ let pipes = {
 var score = {
   best: parseInt(localStorage.getItem("best")) || 0,
   value: 0,
+  finishedRunCalled: false,
   draw: function () {
     if (state.current === state.game) {
       ctx.lineWidth = 2;

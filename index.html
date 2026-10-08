@@ -2,19 +2,56 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <meta name="theme-color" content="#70c5ce">
     <title>Kathikalle Umma - Flappy Bird</title>
+    <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; touch-action: manipulation; }
-        html, body { width: 100%; height: 100%; overflow: hidden; background: #333; }
+        html, body { width: 100%; height: 100%; overflow: hidden; background: #222; }
         body { display: flex; justify-content: center; align-items: center; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
         #game-wrapper { position: relative; width: min(100vw, 480px, calc(100vh * 2 / 3)); width: min(100vw, 480px, calc(100dvh * 2 / 3)); aspect-ratio: 2 / 3; overflow: hidden; background: linear-gradient(180deg, #70c5ce 0%, #4a9aaa 100%); }
         canvas { display: block; width: 100%; height: 100%; border: none; image-rendering: pixelated; image-rendering: crisp-edges; }
         #badge-panel { position: absolute; top: 10px; left: 10px; display: flex; gap: 6px; pointer-events: none; z-index: 10; }
         .badge-icon { width: 28px; height: 28px; border-radius: 50%; border: 2px solid rgba(255,255,255,0.8); box-shadow: 0 2px 4px rgba(0,0,0,0.3); opacity: 0.4; transition: opacity 0.3s; }
         .badge-icon.active { opacity: 1; }
-        #controls-hint { position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); color: white; font-size: 14px; text-align: center; opacity: 0.8; pointer-events: none; text-shadow: 0 1px 2px rgba(0,0,0,0.5); }
+        #controls-hint { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); color: white; font-size: 14px; text-align: center; opacity: 0.9; pointer-events: none; text-shadow: 0 1px 2px rgba(0,0,0,0.5); z-index: 10; }
+
+        /* Leaderboard overlay */
+        #lb-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(10, 30, 45, 0.92); z-index: 20; display: flex; flex-direction: column; align-items: center; padding: 20px 16px; overflow-y: auto; display: none; }
+        #lb-overlay.active { display: flex; animation: fadeIn 0.2s ease; }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+        #lb-overlay h2 { color: #fff; font-size: 22px; margin-bottom: 8px; text-shadow: 0 2px 4px rgba(0,0,0,0.4); }
+        #lb-overlay .subtitle { color: rgba(255,255,255,0.85); font-size: 13px; margin-bottom: 14px; }
+        #lb-name-row { display: flex; gap: 8px; align-items: center; margin-bottom: 14px; width: 100%; max-width: 360px; }
+        #lb-name-row input { flex: 1; padding: 10px 12px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.25); background: rgba(255,255,255,0.12); color: #fff; font-size: 15px; outline: none; }
+        #lb-name-row input:focus { border-color: rgba(255,255,255,0.7); background: rgba(255,255,255,0.18); }
+        #lb-name-row button { padding: 10px 14px; border-radius: 8px; border: none; background: #ffd700; color: #333; font-weight: 700; font-size: 14px; cursor: pointer; }
+        #lb-name-row button:disabled { opacity: 0.5; cursor: default; }
+        #lb-status { font-size: 13px; min-height: 20px; margin-bottom: 12px; color: #ffd700; }
+        #lb-table { width: 100%; max-width: 360px; border-collapse: collapse; font-size: 14px; }
+        #lb-table th { color: rgba(255,255,255,0.6); text-align: left; padding: 6px 8px; font-weight: 600; border-bottom: 1px solid rgba(255,255,255,0.15); }
+        #lb-table td { padding: 8px; color: #fff; border-bottom: 1px solid rgba(255,255,255,0.08); }
+        #lb-table td.rank { width: 32px; font-weight: 700; color: #ffd700; }
+        #lb-table td.score { text-align: right; font-weight: 700; color: #fff; }
+        #lb-table td.name { word-break: break-word; }
+        #lb-empty { text-align: center; color: rgba(255,255,255,0.6); padding: 20px; }
+        #lb-close, #lb-refresh { margin-top: 14px; padding: 10px 18px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.25); background: rgba(255,255,255,0.1); color: #fff; font-size: 14px; cursor: pointer; }
+        #lb-refresh { margin-right: 8px; background: rgba(255,255,255,0.2); }
+        #lb-close:hover, #lb-refresh:hover { background: rgba(255,255,255,0.25); }
+
+        /* Game-over status area (outside canvas) */
+        #game-status { position: absolute; bottom: 56px; left: 50%; transform: translateX(-50%); z-index: 15; pointer-events: none; text-align: center; width: 90%; max-width: 320px; opacity: 0; transition: opacity 0.2s ease; }
+        #game-status.active { opacity: 1; }
+        #game-status .status-text { color: #fff; font-size: 13px; text-shadow: 0 1px 3px rgba(0,0,0,0.5); }
+        #game-status .status-sub { color: rgba(255,255,255,0.85); font-size: 12px; margin-top: 2px; }
+
+        /* Mobile safe area */
+        @media (max-width: 400px) {
+            #lb-overlay h2 { font-size: 20px; }
+            #lb-table { font-size: 13px; }
+        }
     </style>
 </head>
 <body>
@@ -22,7 +59,145 @@
         <canvas id="mycanvas" width="320" height="480"></canvas>
         <div id="badge-panel" aria-label="Achievement badges"></div>
         <div id="controls-hint">Tap or Press Space</div>
+
+        <div id="game-status" aria-live="polite">
+            <div class="status-text"></div>
+            <div class="status-sub"></div>
+        </div>
+
+        <div id="lb-overlay" role="dialog" aria-label="Leaderboard" aria-modal="true">
+            <h2>Leaderboard</h2>
+            <p class="subtitle">Top 10 global scores</p>
+            <div id="lb-name-row">
+                <input type="text" id="lb-name-input" placeholder="Your name (max 20 chars)" aria-label="Display name" maxlength="20" autocomplete="off" />
+                <button id="lb-save-name" aria-label="Save name">Save</button>
+            </div>
+            <div id="lb-status" aria-live="polite"></div>
+            <table id="lb-table" aria-label="Top scores">
+                <thead>
+                    <tr><th>Rank</th><th>Player</th><th>Score</th></tr>
+                </thead>
+                <tbody id="lb-table-body"></tbody>
+            </table>
+            <div id="lb-empty">No scores yet. Be the first!</div>
+            <div>
+                <button id="lb-refresh" aria-label="Refresh leaderboard">Refresh</button>
+                <button id="lb-close" aria-label="Close leaderboard">Back to Game</button>
+            </div>
+            <p style="margin-top:16px; font-size:11px; color:rgba(255,255,255,0.55); text-align:center;">Only anonymous player ID and score are stored. No personal data is required.</p>
+        </div>
     </div>
+
+    <script src="config.js"></script>
+    <script src="leaderboard.js"></script>
     <script src="flappy.js"></script>
+
+    <script>
+        // UI wiring
+        const lbOverlay = document.getElementById('lb-overlay');
+        const lbNameInput = document.getElementById('lb-name-input');
+        const lbSaveBtn = document.getElementById('lb-save-name');
+        const lbStatus = document.getElementById('lb-status');
+        const lbBody = document.getElementById('lb-table-body');
+        const lbEmpty = document.getElementById('lb-empty');
+        const gameStatus = document.getElementById('game-status');
+        const gameStatusText = gameStatus.querySelector('.status-text');
+        const gameStatusSub = gameStatus.querySelector('.status-sub');
+
+        function updateLeaderboardUI() {
+            const data = window.Leaderboard ? window.Leaderboard.getTopTen() : [];
+            lbBody.innerHTML = '';
+            if (!data || data.length === 0) {
+                lbEmpty.style.display = 'block';
+            } else {
+                lbEmpty.style.display = 'none';
+                data.forEach((row, i) => {
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `<td class="rank">${i + 1}</td><td class="name">${escapeHtml(row.display_name || 'Anonymous')}</td><td class="score">${row.score}</td>`;
+                    lbBody.appendChild(tr);
+                });
+            }
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function setStatusText(msg, sub) {
+            if (msg) gameStatusText.textContent = msg;
+            if (sub) gameStatusSub.textContent = sub;
+            gameStatus.classList.add('active');
+            setTimeout(() => gameStatus.classList.remove('active'), 3500);
+        }
+
+        function showLeaderboard() {
+            lbOverlay.classList.add('active');
+            if (window.Leaderboard) window.Leaderboard.refresh();
+            updateLeaderboardUI();
+            // Unsubscribe realtime while overlay hidden? Actually we want updates, so keep it.
+        }
+
+        function hideLeaderboard() {
+            lbOverlay.classList.remove('active');
+        }
+
+        lbNameInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') lbSaveBtn.click();
+        });
+
+        lbSaveBtn.addEventListener('click', () => {
+            if (!window.Leaderboard) return;
+            const ok = window.Leaderboard.setDisplayName(lbNameInput.value);
+            if (ok) {
+                lbStatus.textContent = 'Name saved!';
+                lbStatus.style.color = '#ffd700';
+                lbNameInput.value = window.Leaderboard.getDisplayName();
+                setTimeout(() => { lbStatus.textContent = ''; }, 2000);
+            } else {
+                lbStatus.textContent = 'Invalid name (max 20 chars, no markup)';
+                lbStatus.style.color = '#ff6b6b';
+                setTimeout(() => { lbStatus.textContent = ''; }, 2500);
+            }
+        });
+
+        document.getElementById('lb-refresh').addEventListener('click', () => {
+            if (window.Leaderboard) {
+                window.Leaderboard.refresh();
+                lbStatus.textContent = 'Refreshing...';
+                lbStatus.style.color = '#ffd700';
+                setTimeout(() => {
+                    updateLeaderboardUI();
+                    lbStatus.textContent = '';
+                }, 600);
+            }
+        });
+
+        document.getElementById('lb-close').addEventListener('click', hideLeaderboard);
+
+        // Open leaderboard on a dedicated key (L) or double-tap for accessibility
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'l' || e.key === 'L') {
+                if (!lbOverlay.classList.contains('active')) showLeaderboard();
+            }
+            if (e.key === 'Escape') hideLeaderboard();
+        });
+
+        // Initialize leaderboard when available
+        document.addEventListener('DOMContentLoaded', () => {
+            if (window.Leaderboard) {
+                window.Leaderboard.init();
+                const savedName = window.Leaderboard.getDisplayName();
+                if (savedName) {
+                    lbNameInput.value = savedName;
+                } else {
+                    lbNameInput.placeholder = 'Enter your name';
+                }
+            } else {
+                lbStatus.textContent = 'Leaderboard not configured';
+            }
+        });
+    </script>
 </body>
 </html>
