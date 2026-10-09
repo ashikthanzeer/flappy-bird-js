@@ -125,6 +125,8 @@ function clickHandler() {
 }
 
 document.addEventListener('keydown', function (e) {
+  if (document.getElementById('lb-overlay')?.classList.contains('active')) return;
+  if (e.target && e.target.matches('input, textarea, select, button, [contenteditable="true"]')) return;
   if (e.which === 32 || e.key === ' ' || e.code === 'Space') {
     e.preventDefault();
     clickHandler();
@@ -132,6 +134,7 @@ document.addEventListener('keydown', function (e) {
 });
 
 document.getElementById('game-wrapper').addEventListener('pointerdown', function (e) {
+  if (e.target.closest('#lb-overlay, button, input, select, textarea')) return;
   e.preventDefault();
   clickHandler();
 });
@@ -201,12 +204,16 @@ function finishRun(finalScore) {
   score.finishedRunCalled = true;
   score.best = Math.max(finalScore, score.best);
   localStorage.setItem("best", score.best);
-  // Generate a run ID for duplicate protection
-  const runId = Date.now() + '-' + Math.random().toString(36).slice(2);
+  const runId = typeof crypto !== 'undefined' && crypto.randomUUID
+    ? crypto.randomUUID()
+    : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (char) {
+      var value = Math.random() * 16 | 0;
+      return (char === 'x' ? value : (value & 3 | 8)).toString(16);
+    });
   localStorage.setItem("lb_last_run_id", runId);
 
   if (window.Leaderboard && typeof window.Leaderboard.submitRun === 'function') {
-    window.Leaderboard.submitRun(finalScore).then(function (res) {
+    window.Leaderboard.submitRun(finalScore, runId).then(function (res) {
       var msg = 'Submitted!';
       var sub = '';
       if (res && res.duplicate) {
@@ -214,8 +221,8 @@ function finishRun(finalScore) {
       } else if (res && res.success) {
         msg = 'Score submitted!';
       } else if (res && res.offline) {
-        msg = 'Offline - saved locally';
-        sub = 'Will retry when online';
+        msg = 'Offline - saved for retry';
+        sub = 'Retry is limited to three attempts';
       } else if (res && res.error) {
         msg = 'Submission failed';
         sub = res.error;

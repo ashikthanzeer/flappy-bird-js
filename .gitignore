@@ -1,3 +1,4 @@
 .env
 .env.example
 IMPLEMENTATION_PLAN.md
+node_modules/

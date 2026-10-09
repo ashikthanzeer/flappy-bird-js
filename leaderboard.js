@@ -12,16 +12,21 @@
   const SUPABASE_URL = cfg.SUPABASE_URL || '';
   const SUPABASE_ANON_KEY = cfg.SUPABASE_ANON_KEY || '';
   const POLL_INTERVAL_MS = 25000;
+  const MAX_PENDING_RUNS = 10;
+  const MAX_ATTEMPTS = 3;
+  const PENDING_RUNS_KEY = 'lb_pending_runs';
 
   let supabase = null;
   let realtimeChannel = null;
   let pollTimer = null;
-
   let displayName = localStorage.getItem('lb_display_name') || '';
-  let pendingSubmission = false;
-  let submissionStatus = 'idle'; // idle | submitting | success | error | offline | duplicate
+  let submissionStatus = 'idle';
   let topTen = [];
-  let lastRunId = '';
+  let initPromise = null;
+  let processingPromise = null;
+  let requestVersion = 0;
+  let isVisible = false;
+  const runResults = new Map();
 
   // Helper: safe name validation (same rules as server)
   function isValidName(name) {
@@ -33,9 +38,22 @@
     return true;
   }
 
+  function publishChange(status, error) {
+    window.dispatchEvent(new CustomEvent('leaderboard:change', {
+      detail: { rows: topTen, status, error: error || '' }
+    }));
+  }
+
   function initClient() {
-    if (typeof window.supabase !== 'undefined' && window.supabase.createClient && SUPABASE_URL && SUPABASE_ANON_KEY) {
-      supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    if (supabase) return true;
+    if (window.supabase?.createClient && SUPABASE_URL && SUPABASE_ANON_KEY) {
+      supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+        auth: {
+          persistSession: true,
+          autoRefreshToken: true,
+          detectSessionInUrl: false
+        }
+      });
       return true;
     }
     return false;
@@ -44,74 +62,230 @@
   async function signInAnonymous() {
     if (!supabase) return null;
     try {
-      const { data: { session }, error } = await supabase.auth.getSession();
+      const { data: { session } } = await supabase.auth.getSession();
       if (session) return session.user;
 
-      const { data, error: signErr } = await supabase.auth.signInAnonymously();
+      const { data, error } = await supabase.auth.signInAnonymously();
+      if (error) throw error;
       if (data && data.user) return data.user;
-      // If anonymous auth not enabled, fall back to existing user id in storage
-      const storedId = localStorage.getItem('lb_player_id');
-      if (storedId) {
-        return { id: storedId };
-      }
-      return null;
+      throw new Error('Anonymous sign-in returned no user.');
     } catch (e) {
       console.warn('Anonymous sign-in failed:', e);
-      const storedId = localStorage.getItem('lb_player_id');
-      return storedId ? { id: storedId } : null;
+      throw e;
     }
+  }
+
+  function readPendingRuns() {
+    try {
+      const stored = JSON.parse(localStorage.getItem(PENDING_RUNS_KEY) || '[]');
+      if (!Array.isArray(stored)) return [];
+      return stored.filter((run) => run &&
+        typeof run.run_id === 'string' &&
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(run.run_id) &&
+        Number.isSafeInteger(run.score) && run.score >= 0 && run.score <= 999 &&
+        isValidName(run.display_name) &&
+        Number.isInteger(run.attempts) && run.attempts >= 0 && run.attempts <= MAX_ATTEMPTS
+      ).slice(0, MAX_PENDING_RUNS);
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function writePendingRuns(runs) {
+    localStorage.setItem(PENDING_RUNS_KEY, JSON.stringify(runs));
+  }
+
+  function removePendingRun(runId) {
+    writePendingRuns(readPendingRuns().filter((run) => run.run_id !== runId));
+  }
+
+  function createRunId() {
+    if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (char) => {
+      const value = Math.random() * 16 | 0;
+      return (char === 'x' ? value : (value & 3 | 8)).toString(16);
+    });
   }
 
   async function fetchTopTen() {
-    try {
-      const res = await fetch(cfg.SUPABASE_URL ? cfg.SUPABASE_URL.replace(/\/$/, '') + '/functions/v1/get-top10' : 'https://your-project.supabase.co/functions/v1/get-top10');
-      const json = await res.json();
-      if (json && Array.isArray(json.data)) {
-        topTen = json.data;
-        return topTen;
-      }
-    } catch (e) {
-      console.warn('Fetch top 10 failed, falling back:', e);
+    const version = ++requestVersion;
+    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+      publishChange('error', 'Supabase configuration is missing.');
+      return topTen;
     }
-    return [];
+
+    publishChange('loading');
+    try {
+      const response = await fetch(`${SUPABASE_URL.replace(/\/+$/, '')}/functions/v1/get-top10`, {
+        method: 'GET',
+        headers: { apikey: SUPABASE_ANON_KEY }
+      });
+      const json = await response.json();
+      if (!response.ok) throw new Error(json?.error || `HTTP ${response.status}`);
+      if (!json || !Array.isArray(json.data)) throw new Error('Invalid leaderboard response.');
+      if (version === requestVersion) {
+        topTen = json.data;
+        publishChange('success');
+      }
+      return topTen;
+    } catch (error) {
+      console.warn('Fetch top 10 failed:', error);
+      if (version === requestVersion) publishChange('error', error.message || 'Leaderboard request failed.');
+      return topTen;
+    }
   }
 
-  async function submitScore(score, name) {
-    if (pendingSubmission) return { error: 'Already submitting' };
-    pendingSubmission = true;
-    submissionStatus = 'submitting';
+  function delay(milliseconds) {
+    return new Promise((resolve) => setTimeout(resolve, milliseconds));
+  }
 
-    const runId = lastRunId || (Date.now() + '-' + Math.random().toString(36).slice(2));
-    lastRunId = runId;
-    localStorage.setItem('lb_last_run_id', runId);
+  async function processPendingRuns(runId) {
+    if (!supabase) return runId ? { error: 'Leaderboard is not configured.' } : undefined;
+    if (processingPromise) {
+      await processingPromise;
+      if (runId && readPendingRuns().some((run) => run.run_id === runId)) {
+        return processPendingRuns(runId);
+      }
+      return runId ? runResults.get(runId) || { error: 'Submission could not be completed.' } : undefined;
+    }
+
+    processingPromise = (async () => {
+      const results = {};
+      for (const queuedRun of readPendingRuns()) {
+        if (!navigator.onLine) {
+          submissionStatus = 'offline';
+          publishChange('offline', 'Waiting for a network connection.');
+          results[queuedRun.run_id] = { error: 'Network unavailable', offline: true };
+          break;
+        }
+
+        let result;
+        let accessToken;
+        try {
+          let { data: { session } } = await supabase.auth.getSession();
+          if (!session?.access_token) {
+            const user = await signInAnonymous();
+            localStorage.setItem('lb_player_id', user.id);
+            ({ data: { session } } = await supabase.auth.getSession());
+          }
+          if (!session?.access_token) throw new Error('Anonymous authentication is unavailable.');
+          accessToken = session.access_token;
+        } catch (error) {
+          result = { error: 'Anonymous authentication is unavailable.' };
+          runResults.set(queuedRun.run_id, result);
+          publishChange('error', result.error);
+          break;
+        }
+
+        while (queuedRun.attempts < MAX_ATTEMPTS) {
+          queuedRun.attempts++;
+          writePendingRuns(readPendingRuns().map((run) => run.run_id === queuedRun.run_id ? queuedRun : run));
+          try {
+            const { data: { session } } = await supabase.auth.getSession();
+            const token = session?.access_token || accessToken;
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 10000);
+            let response;
+            try {
+              response = await fetch(`${SUPABASE_URL.replace(/\/+$/, '')}/functions/v1/submit-score`, {
+                method: 'POST',
+                headers: {
+                  apikey: SUPABASE_ANON_KEY,
+                  Authorization: `Bearer ${token}`,
+                  'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                  score: queuedRun.score,
+                  display_name: queuedRun.display_name,
+                  run_id: queuedRun.run_id
+                }),
+                signal: controller.signal
+              });
+            } finally {
+              clearTimeout(timeout);
+            }
+
+            const json = await response.json().catch(() => null);
+            if (response.ok && (json?.success || json?.duplicate)) {
+              result = json.duplicate ? { duplicate: true } : { success: true };
+              removePendingRun(queuedRun.run_id);
+              submissionStatus = json.duplicate ? 'duplicate' : 'success';
+              fetchTopTen();
+              break;
+            }
+
+            const transient = response.status === 408 || response.status === 429 || response.status >= 500;
+            if (transient && queuedRun.attempts < MAX_ATTEMPTS) {
+              await delay(250 * (2 ** (queuedRun.attempts - 1)));
+              continue;
+            }
+            result = { error: json?.error || `Submission failed (HTTP ${response.status}).`, status: response.status };
+            removePendingRun(queuedRun.run_id);
+            submissionStatus = 'error';
+            break;
+          } catch (error) {
+            if (!navigator.onLine) {
+              result = { error: 'Network unavailable', offline: true };
+              submissionStatus = 'offline';
+              break;
+            }
+            if (queuedRun.attempts < MAX_ATTEMPTS) {
+              await delay(250 * (2 ** (queuedRun.attempts - 1)));
+              continue;
+            }
+            result = { error: error.name === 'AbortError' ? 'Submission timed out.' : 'Network request failed.' };
+            removePendingRun(queuedRun.run_id);
+            submissionStatus = 'error';
+          }
+          break;
+        }
+
+        if (!result && queuedRun.attempts >= MAX_ATTEMPTS) {
+          result = { error: 'Retry limit reached.' };
+          removePendingRun(queuedRun.run_id);
+          submissionStatus = 'error';
+        }
+        if (result) {
+          results[queuedRun.run_id] = result;
+          runResults.set(queuedRun.run_id, result);
+          if (runResults.size > MAX_PENDING_RUNS) runResults.delete(runResults.keys().next().value);
+        }
+        publishChange(submissionStatus, result?.error || '');
+        if (result?.offline) break;
+      }
+      if (!runId) return undefined;
+      return results[runId] || runResults.get(runId) ||
+        (!navigator.onLine && readPendingRuns().some((run) => run.run_id === runId)
+          ? { error: 'Network unavailable', offline: true }
+          : undefined);
+    })();
 
     try {
-      const tokenRes = await supabase.auth.getSession();
-      const token = tokenRes?.data?.session?.access_token || '';
-
-      const endpoint = cfg.SUPABASE_URL ? cfg.SUPABASE_URL.replace(/\/$/, '') + '/functions/v1/submit-score' : 'https://your-project.supabase.co/functions/v1/submit-score';
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}) },
-        body: JSON.stringify({ score, display_name: name, run_id: runId })
-      });
-      const json = await res.json();
-      if (!res.ok) {
-        submissionStatus = 'error';
-        return { error: json.error || 'Server error', status: res.status };
-      }
-      if (json.duplicate) {
-        submissionStatus = 'duplicate';
-        return { duplicate: true, data: json.data || {} };
-      }
-      submissionStatus = 'success';
-      return { success: true, data: json.data || {} };
-    } catch (e) {
-      submissionStatus = 'offline';
-      return { error: 'Network error', offline: true };
+      return await processingPromise;
     } finally {
-      pendingSubmission = false;
+      processingPromise = null;
     }
+  }
+
+  async function submitRun(score, runId) {
+    if (!Number.isSafeInteger(score) || score < 0 || score > 999) return { error: 'Invalid score.' };
+    const name = displayName || 'Player';
+    if (!isValidName(name)) return { error: 'Invalid display name.' };
+    runId = runId || createRunId();
+
+    await initLeaderboard();
+    if (!supabase) return { error: 'Leaderboard is not configured.' };
+
+    const runs = readPendingRuns();
+    const existing = runs.find((run) => run.run_id === runId);
+    if (!existing) {
+      if (runs.length >= MAX_PENDING_RUNS) return { error: 'Pending submission queue is full.' };
+      runs.push({ run_id: runId, score, display_name: name, attempts: 0 });
+      writePendingRuns(runs);
+    }
+    submissionStatus = 'submitting';
+    publishChange('submitting');
+    return processPendingRuns(runId);
   }
 
   function subscribeRealtime() {
@@ -154,60 +328,60 @@
     }
   }
 
-  // Initialize
+  function setVisible(visible) {
+    isVisible = visible && !!supabase;
+    if (isVisible) {
+      subscribeRealtime();
+      startPolling();
+    } else {
+      unsubscribeRealtime();
+      stopPolling();
+    }
+  }
+
   function initLeaderboard() {
-    initClient();
-    signInAnonymous().then(user => {
-      if (user && user.id) {
-        localStorage.setItem('lb_player_id', user.id);
+    if (initPromise) return initPromise;
+    initPromise = (async () => {
+      if (!initClient()) {
+        publishChange('error', 'Leaderboard is not configured.');
+        return false;
       }
-    });
-    fetchTopTen();
-    subscribeRealtime();
-    startPolling();
+      try {
+        const user = await signInAnonymous();
+        localStorage.setItem('lb_player_id', user.id);
+        publishChange('identity');
+      } catch (error) {
+        publishChange('error', 'Anonymous sign-in failed.');
+      }
+      await fetchTopTen();
+      if (readPendingRuns().length && navigator.onLine) processPendingRuns();
+      return true;
+    })();
+    return initPromise;
   }
 
   // Public API
   window.Leaderboard = {
     init: initLeaderboard,
-    submitRun: async function (score) {
-      const name = displayName || localStorage.getItem('lb_display_name') || 'Player';
-      if (!isValidName(displayName) && displayName) {
-        // Force a valid name if invalid
-        return { error: 'Invalid display name' };
-      }
-      return submitScore(score, name || 'Player');
-    },
+    submitRun,
     setDisplayName: function (name) {
-      displayName = name ? name.trim() : '';
+      const normalizedName = name ? name.trim() : '';
+      if (!isValidName(normalizedName)) return false;
+      displayName = normalizedName;
       localStorage.setItem('lb_display_name', displayName);
-      return isValidName(displayName);
+      return true;
     },
     getDisplayName: function () { return displayName || localStorage.getItem('lb_display_name') || ''; },
+    getPlayerId: function () { return localStorage.getItem('lb_player_id') || ''; },
     getStatus: function () { return submissionStatus; },
     getTopTen: function () { return topTen; },
-    refresh: function () { fetchTopTen(); },
+    refresh: fetchTopTen,
+    setVisible,
     unsubscribe: function () { unsubscribeRealtime(); },
     isOffline: function () { return !navigator.onLine; },
   };
 
-  // Auto-init when config is present
-  if (window.APP_CONFIG && SUPABASE_URL && SUPABASE_ANON_KEY && SUPABASE_URL !== 'https://your-project.supabase.co') {
-    if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', initLeaderboard);
-    } else {
-      initLeaderboard();
-    }
-  } else {
-    // Even without a configured backend, set up basic functions so the game works
-    if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', () => {
-        window.Leaderboard = window.Leaderboard || {};
-        window.Leaderboard.init = () => {};
-        window.Leaderboard.submitRun = async () => ({ error: 'Not configured' });
-        window.Leaderboard.setDisplayName = () => false;
-        window.Leaderboard.getStatus = () => 'idle';
-      });
-    }
-  }
+  window.addEventListener('online', () => processPendingRuns());
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initLeaderboard, { once: true });
+  else initLeaderboard();
 })();

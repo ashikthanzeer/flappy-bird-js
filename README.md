@@ -31,8 +31,8 @@ A simple yet fun **Flappy Bird clone** built with **HTML, CSS, and Vanilla JavaS
   * One global all-time leaderboard sorted by score (descending) then earliest submission.
   * Anonymous sign-in provides a stable player ID on that browser/device.
   * Short display name saved with each submitted score.
-  * Realtime updates for new top-10 entries; manual refresh and 25-second polling fallback.
-  * Offline-safe play: final run submission is queued/retried with duplicate protection.
+  * Realtime updates while the leaderboard is open; manual refresh and 25-second polling fallback.
+  * Final run submissions use a bounded local queue (up to 10 runs) and at most 3 attempts per run. Retryable failures reuse the same run ID; permanent failures are shown and discarded.
 * 🏗️ **Canvas Rendering Loop**: Efficient rendering with `requestAnimationFrame`.
 * 🌍 **Responsive Controls**: Playable with mouse clicks or **Spacebar** key; mobile-sized leaderboard overlay.
 
@@ -63,20 +63,22 @@ A simple yet fun **Flappy Bird clone** built with **HTML, CSS, and Vanilla JavaS
 
 ### 1. Backend Foundation (Supabase)
 
-1. Create a Supabase project.
-2. In **SQL Editor**, run the schema and RLS scripts:
-   - `supabase/sql/01_schema.sql`
-   - `supabase/sql/02_rls.sql`
-3. Enable **Anonymous Auth** in **Authentication > Settings**.
-4. Deploy Edge Functions (`submit-score` and `get-top10`) using the Supabase CLI or dashboard.
-5. Add environment variables in `.env.example` or deploy config:
-   - `SUPABASE_URL`
-   - `SUPABASE_ANON_KEY`
-   - `SUPABASE_SERVICE_ROLE_KEY` (used only in Edge Functions, never in browser code)
+1. Create a Supabase project and enable **Anonymous Sign-Ins** in **Authentication > Settings**.
+2. For a new project, run `supabase/sql/01_schema.sql` and `supabase/sql/02_rls.sql` in the SQL Editor. For an existing table, also apply `supabase/sql/03_run_idempotency.sql` before deploying the updated submit function. This migration is not run automatically.
+3. Confirm the Edge Function environment provides `SUPABASE_URL`, `SUPABASE_ANON_KEY`, and `SUPABASE_SERVICE_ROLE_KEY`. The service-role key is server-only; never put it in the static site.
+4. Link the CLI and deploy both functions. `supabase/config.toml` makes `get-top10` public at the gateway (the function still requires the project API key and reads through the public-read RLS policy) while `submit-score` requires a valid JWT.
+
+```bash
+npx supabase link --project-ref <PROJECT_REF>
+npx supabase functions deploy get-top10 --use-api
+npx supabase functions deploy submit-score --use-api
+```
+
+5. Enable `leaderboard_scores` in the `supabase_realtime` publication in the Supabase dashboard. SQL table creation does not enable Realtime automatically.
 
 ### 2. Client Configuration
 
-Copy `.env.example` to `.env` or edit `config.js` with your project URL and public anon key:
+The static browser app does not read `.env`. Set the project URL and public anon/publishable key in `config.js`:
 
 ```js
 window.APP_CONFIG = {
@@ -97,7 +99,7 @@ python3 -m http.server 8080
 npx serve .
 ```
 
-Then open `http://localhost:8080`.
+Then open `http://localhost:8080`. The public key is expected to be visible in browser code; never place a service-role or secret key there.
 
 ---
 
@@ -110,20 +112,20 @@ Only the anonymous player ID, your chosen display name, score, and submission ti
 ## ⚙️ Implementation Details (From IMPLEMENTATION_PLAN.md)
 
 ### Data and API
-- `leaderboard_scores` table: `id`, `player_id`, `display_name`, `score`, `created_at`.
+- `leaderboard_scores` table: `id`, `player_id`, `display_name`, `score`, `created_at`, `run_id`.
 - Indexes for descending score + earliest submission time.
 - RLS: deny direct client writes; allow public reads.
-- Edge Function (`submit-score`) validates score, display name, rate limits, and applies duplicate protection (`run_id`).
+- Edge Function (`submit-score`) validates the authenticated player, integer score, display name, and UUID run ID. A unique `(player_id, run_id)` constraint and atomic upsert provide idempotency.
 - Read query (`get-top10`) returns the top 10 with deterministic tie ordering.
-- Realtime subscription enabled; unsubscribe when leaderboard hidden; polling every 25s as fallback.
+- Realtime subscription and 25-second polling are active only while the leaderboard is open; polling is the fallback when Realtime is unavailable.
 
 ### Game Integration
 - `finishRun()` is called once per run transition to game over (floor, ceiling, and pipe collisions), never per frame or per score increment.
-- `localStorage` best score preserved. Duplicate protection uses a run ID.
+- `localStorage` best score is preserved. Failed final submissions are kept in a queue of at most 10 runs and retried at most 3 times per run; the same UUID is reused across retries and page reloads.
 - Game remains fully playable without network or configured backend.
 
 ### Abuse and Privacy
-- Client-side validation is not cheat-proof. The Edge Function enforces score bounds (0–999), name length limits, character restrictions, and rate limits.
+- Client-side validation is not cheat-proof. The Edge Function enforces score bounds (0–999), name length limits, character restrictions, and a per-player count-based rate limit. The count check is not atomic under concurrent submissions and is only a casual-abuse deterrent.
 - If competitive integrity requires stronger guarantees, run simulation should be moved to a trusted server; the current design is appropriate for casual public leaderboards.
 
 ---
@@ -131,13 +133,15 @@ Only the anonymous player ID, your chosen display name, score, and submission ti
 ## 📋 Verification and Rollout
 
 Test the following before production rollout:
-- Two independent browsers/devices see submitted scores via Realtime.
-- Without Realtime, scores appear within the polling interval (≤ 30 seconds).
-- One completed run creates at most one leaderboard entry, even after retries.
+- Two independent browsers/devices see submitted scores via Realtime after the table is added to the Realtime publication.
+- Without Realtime, scores appear within the polling interval (≤ 25 seconds) while the leaderboard is open.
+- One completed run creates at most one leaderboard entry after the idempotency migration has been applied.
 - Invalid scores, oversized/invalid names, rate-limited submissions, and direct table writes are rejected.
 - No privileged service-role key is present in the repository or browser bundle (`grep -r "service_role" .` should not find keys in source files).
 - Leaderboard remains readable on desktop and mobile, including loading, empty, success, error, and offline states.
 - Keyboard access: `Space` to play, `L` to open leaderboard, `Escape` to close.
+
+Run the local regression tests with `npm test`. The tests mock the browser/Supabase boundary; they do not verify deployed functions, database constraints, or dashboard settings.
 
 ---
 

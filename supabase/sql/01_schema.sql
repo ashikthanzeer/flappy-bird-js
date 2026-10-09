@@ -4,7 +4,9 @@ CREATE TABLE IF NOT EXISTS public.leaderboard_scores (
   player_id UUID NOT NULL,
   display_name TEXT NOT NULL,
   score INTEGER NOT NULL,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  run_id UUID NOT NULL,
+  CONSTRAINT leaderboard_scores_player_run_id_key UNIQUE (player_id, run_id)
 );
 
 -- Indexes for descending score (tie: earliest submission) and time-based queries

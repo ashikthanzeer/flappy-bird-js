@@ -15,6 +15,8 @@
         #badge-panel { position: absolute; top: 10px; left: 10px; display: flex; gap: 6px; pointer-events: none; z-index: 10; }
         .badge-icon { width: 28px; height: 28px; border-radius: 50%; border: 2px solid rgba(255,255,255,0.8); box-shadow: 0 2px 4px rgba(0,0,0,0.3); opacity: 0.4; transition: opacity 0.3s; }
         .badge-icon.active { opacity: 1; }
+        #lb-open { position: absolute; top: 10px; right: 10px; z-index: 11; min-height: 42px; padding: 0 12px; border: 1px solid rgba(255,255,255,0.65); border-radius: 6px; background: rgba(10,30,45,0.78); color: #fff; font-size: 13px; font-weight: 700; cursor: pointer; text-shadow: 0 1px 2px rgba(0,0,0,0.45); }
+        #lb-open:hover, #lb-open:focus-visible { background: rgba(10,30,45,0.96); outline: 2px solid #ffd700; outline-offset: 2px; }
         #controls-hint { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); color: white; font-size: 14px; text-align: center; opacity: 0.9; pointer-events: none; text-shadow: 0 1px 2px rgba(0,0,0,0.5); z-index: 10; }
 
         /* Leaderboard overlay */
@@ -58,6 +60,7 @@
     <div id="game-wrapper">
         <canvas id="mycanvas" width="320" height="480"></canvas>
         <div id="badge-panel" aria-label="Achievement badges"></div>
+        <button id="lb-open" type="button" aria-haspopup="dialog" aria-controls="lb-overlay">Leaderboard</button>
         <div id="controls-hint">Tap or Press Space</div>
 
         <div id="game-status" aria-live="polite">
@@ -72,6 +75,7 @@
                 <input type="text" id="lb-name-input" placeholder="Your name (max 20 chars)" aria-label="Display name" maxlength="20" autocomplete="off" />
                 <button id="lb-save-name" aria-label="Save name">Save</button>
             </div>
+            <p id="lb-identity" aria-live="polite" style="margin: -6px 0 10px; color: rgba(255,255,255,0.65); font-size: 11px;">Restoring your anonymous player...</p>
             <div id="lb-status" aria-live="polite"></div>
             <table id="lb-table" aria-label="Top scores">
                 <thead>
@@ -84,7 +88,7 @@
                 <button id="lb-refresh" aria-label="Refresh leaderboard">Refresh</button>
                 <button id="lb-close" aria-label="Close leaderboard">Back to Game</button>
             </div>
-            <p style="margin-top:16px; font-size:11px; color:rgba(255,255,255,0.55); text-align:center;">Only anonymous player ID and score are stored. No personal data is required.</p>
+            <p style="margin-top:16px; font-size:11px; color:rgba(255,255,255,0.55); text-align:center;">Only an anonymous player ID, display name, score, and submission time are stored.</p>
         </div>
     </div>
 
@@ -97,6 +101,7 @@
         const lbOverlay = document.getElementById('lb-overlay');
         const lbNameInput = document.getElementById('lb-name-input');
         const lbSaveBtn = document.getElementById('lb-save-name');
+        const lbIdentity = document.getElementById('lb-identity');
         const lbStatus = document.getElementById('lb-status');
         const lbBody = document.getElementById('lb-table-body');
         const lbEmpty = document.getElementById('lb-empty');
@@ -104,25 +109,37 @@
         const gameStatusText = gameStatus.querySelector('.status-text');
         const gameStatusSub = gameStatus.querySelector('.status-sub');
 
-        function updateLeaderboardUI() {
-            const data = window.Leaderboard ? window.Leaderboard.getTopTen() : [];
+        function updateLeaderboardUI(rows, status, error) {
+            const data = rows || (window.Leaderboard ? window.Leaderboard.getTopTen() : []);
             lbBody.innerHTML = '';
-            if (!data || data.length === 0) {
-                lbEmpty.style.display = 'block';
-            } else {
+            if (data && data.length > 0) {
                 lbEmpty.style.display = 'none';
                 data.forEach((row, i) => {
                     const tr = document.createElement('tr');
-                    tr.innerHTML = `<td class="rank">${i + 1}</td><td class="name">${escapeHtml(row.display_name || 'Anonymous')}</td><td class="score">${row.score}</td>`;
+                    const rank = document.createElement('td');
+                    rank.className = 'rank';
+                    rank.textContent = String(i + 1);
+                    const name = document.createElement('td');
+                    name.className = 'name';
+                    name.textContent = row.display_name || 'Anonymous';
+                    const value = document.createElement('td');
+                    value.className = 'score';
+                    value.textContent = String(row.score);
+                    tr.append(rank, name, value);
                     lbBody.appendChild(tr);
                 });
             }
-        }
-
-        function escapeHtml(text) {
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
+            lbEmpty.style.display = data && data.length > 0 ? 'none' : 'block';
+            if (status === 'loading') {
+                lbStatus.textContent = 'Loading scores...';
+                lbEmpty.textContent = '';
+            } else if (status === 'error' || status === 'offline') {
+                lbStatus.textContent = error || 'Unable to load leaderboard.';
+                lbEmpty.textContent = 'Leaderboard unavailable.';
+            } else if (status === 'success') {
+                lbStatus.textContent = '';
+                lbEmpty.textContent = 'No scores yet. Be the first!';
+            }
         }
 
         function setStatusText(msg, sub) {
@@ -134,14 +151,26 @@
 
         function showLeaderboard() {
             lbOverlay.classList.add('active');
-            if (window.Leaderboard) window.Leaderboard.refresh();
+            if (window.Leaderboard) {
+                window.Leaderboard.setVisible(true);
+                window.Leaderboard.refresh();
+            }
             updateLeaderboardUI();
-            // Unsubscribe realtime while overlay hidden? Actually we want updates, so keep it.
         }
 
         function hideLeaderboard() {
             lbOverlay.classList.remove('active');
+            if (window.Leaderboard) window.Leaderboard.setVisible(false);
         }
+
+        window.addEventListener('leaderboard:change', (event) => {
+            const detail = event.detail || {};
+            if (detail.status === 'identity') {
+                lbIdentity.textContent = 'Anonymous player saved on this browser.';
+                return;
+            }
+            updateLeaderboardUI(detail.rows, detail.status, detail.error);
+        });
 
         lbNameInput.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') lbSaveBtn.click();
@@ -164,22 +193,20 @@
 
         document.getElementById('lb-refresh').addEventListener('click', () => {
             if (window.Leaderboard) {
-                window.Leaderboard.refresh();
                 lbStatus.textContent = 'Refreshing...';
                 lbStatus.style.color = '#ffd700';
-                setTimeout(() => {
-                    updateLeaderboardUI();
-                    lbStatus.textContent = '';
-                }, 600);
+                window.Leaderboard.refresh();
             }
         });
 
         document.getElementById('lb-close').addEventListener('click', hideLeaderboard);
+        document.getElementById('lb-open').addEventListener('click', showLeaderboard);
 
         // Open leaderboard on a dedicated key (L) or double-tap for accessibility
         document.addEventListener('keydown', (e) => {
+            const typing = e.target && e.target.matches('input, textarea, select, [contenteditable="true"]');
             if (e.key === 'l' || e.key === 'L') {
-                if (!lbOverlay.classList.contains('active')) showLeaderboard();
+                if (!typing && !lbOverlay.classList.contains('active')) showLeaderboard();
             }
             if (e.key === 'Escape') hideLeaderboard();
         });
@@ -187,12 +214,14 @@
         // Initialize leaderboard when available
         document.addEventListener('DOMContentLoaded', () => {
             if (window.Leaderboard) {
-                window.Leaderboard.init();
                 const savedName = window.Leaderboard.getDisplayName();
                 if (savedName) {
                     lbNameInput.value = savedName;
                 } else {
                     lbNameInput.placeholder = 'Enter your name';
+                }
+                if (window.Leaderboard.getPlayerId()) {
+                    lbIdentity.textContent = 'Anonymous player saved on this browser.';
                 }
             } else {
                 lbStatus.textContent = 'Leaderboard not configured';
