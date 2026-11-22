@@ -11,7 +11,7 @@
         html, body { width: 100%; height: 100%; overflow: hidden; background: #222; }
         body { display: flex; justify-content: center; align-items: center; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
         #game-wrapper { position: relative; width: min(100vw, 480px, calc(100vh * 2 / 3)); width: min(100vw, 480px, calc(100dvh * 2 / 3)); aspect-ratio: 2 / 3; overflow: hidden; background: linear-gradient(180deg, #70c5ce 0%, #4a9aaa 100%); }
-        canvas { display: block; width: 100%; height: 100%; border: none; image-rendering: pixelated; image-rendering: crisp-edges; }
+        canvas { display: block; width: 100%; height: 100%; border: none; }
         #badge-panel { position: absolute; top: 10px; left: 10px; display: flex; gap: 6px; pointer-events: none; z-index: 10; }
         .badge-icon { width: 28px; height: 28px; border-radius: 50%; border: 2px solid rgba(255,255,255,0.8); box-shadow: 0 2px 4px rgba(0,0,0,0.3); opacity: 0.4; transition: opacity 0.3s; }
         .badge-icon.active { opacity: 1; }

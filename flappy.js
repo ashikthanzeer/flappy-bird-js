@@ -1,19 +1,25 @@
 var cvs = document.querySelector('#mycanvas');
 var ctx = cvs.getContext('2d');
 
+var GAME_WIDTH = 320;
+var GAME_HEIGHT = 480;
+var renderScale = Math.min(Math.max(window.devicePixelRatio || 1, 2), 4);
+
 var degree = Math.PI / 180;
 var frames = 0;
 
 function resizeCanvas() {
   var wrapper = document.getElementById('game-wrapper');
   if (!wrapper) return;
+  renderScale = Math.min(Math.max(window.devicePixelRatio || 1, 2), 4);
+  cvs.width = GAME_WIDTH * renderScale;
+  cvs.height = GAME_HEIGHT * renderScale;
+  ctx.setTransform(renderScale, 0, 0, renderScale, 0, 0);
   var w = wrapper.clientWidth;
   var h = wrapper.clientHeight;
-  var baseW = cvs.width;
-  var baseH = cvs.height;
-  var s = Math.min(w / baseW, h / baseH);
-  cvs.style.width = (baseW * s) + 'px';
-  cvs.style.height = (baseH * s) + 'px';
+  var s = Math.min(w / GAME_WIDTH, h / GAME_HEIGHT);
+  cvs.style.width = (GAME_WIDTH * s) + 'px';
+  cvs.style.height = (GAME_HEIGHT * s) + 'px';
   cvs.style.position = 'absolute';
   cvs.style.top = '0';
   cvs.style.left = '0';
@@ -23,6 +29,9 @@ resizeCanvas();
 
 var sprite = new Image();
 sprite.src = "./images/sprite.png";
+
+var faceImg = new Image();
+faceImg.src = "./images/face.png";
 
 var SCORE = new Audio();
 SCORE.src = "audios/score.wav";
@@ -145,7 +154,7 @@ let bg = {
   w: 275,
   h: 226,
   x: 0,
-  y: cvs.height - 226,
+  y: GAME_HEIGHT - 226,
   draw: function () {
     ctx.drawImage(sprite, this.sX, this.sY, this.w, this.h, this.x, this.y, this.w, this.h);
     ctx.drawImage(sprite, this.sX, this.sY, this.w, this.h, this.x + this.w, this.y, this.w, this.h);
@@ -158,7 +167,7 @@ let fg = {
   w: 224,
   h: 112,
   x: 0,
-  y: cvs.height - 112,
+  y: GAME_HEIGHT - 112,
   dx: gameConfig.pipeDx,
   draw: function () {
     ctx.drawImage(sprite, this.sX, this.sY, this.w, this.h, this.x, this.y, this.w, this.h);
@@ -176,7 +185,7 @@ let getReady = {
   sY: 228,
   w: 173,
   h: 152,
-  x: cvs.width / 2 - 173 / 2,
+  x: GAME_WIDTH / 2 - 173 / 2,
   y: 80,
   draw: function () {
     if (state.current === state.getReady) {
@@ -190,7 +199,7 @@ let gameOver = {
   sY: 228,
   w: 225,
   h: 202,
-  x: cvs.width / 2 - 225 / 2,
+  x: GAME_WIDTH / 2 - 225 / 2,
   y: 90,
   draw: function () {
     if (state.current === state.over) {
@@ -252,8 +261,8 @@ let bird = {
     { sX: 276, sY: 164 },
     { sX: 276, sY: 139 }
   ],
-  w: 34,
-  h: 26,
+  w: 24,
+  h: 36,
   x: 50,
   y: 150,
   speed: 0,
@@ -263,11 +272,19 @@ let bird = {
   animationIndex: 0,
   radius: 12,
   draw: function () {
-    let birdFrame = this.animation[this.animationIndex];
     ctx.save();
     ctx.translate(this.x, this.y);
     ctx.rotate(this.rotation);
-    ctx.drawImage(sprite, birdFrame.sX, birdFrame.sY, this.w, this.h, -this.w / 2, -this.h / 2, this.w, this.h);
+    if (faceImg.complete && faceImg.naturalWidth > 0) {
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      var drawH = this.h;
+      var drawW = drawH * (faceImg.naturalWidth / faceImg.naturalHeight);
+      ctx.drawImage(faceImg, -drawW / 2, -drawH / 2, drawW, drawH);
+    } else {
+      let birdFrame = this.animation[this.animationIndex];
+      ctx.drawImage(sprite, birdFrame.sX, birdFrame.sY, 34, 26, -17, -13, 34, 26);
+    }
     ctx.restore();
   },
   update: function () {
@@ -285,8 +302,8 @@ let bird = {
         this.rotation = 90 * degree;
       }
     }
-    if (this.y + this.h / 2 >= cvs.height - fg.h) {
-      this.y = cvs.height - fg.h - (this.h / 2);
+    if (this.y + this.h / 2 >= GAME_HEIGHT - fg.h) {
+      this.y = GAME_HEIGHT - fg.h - (this.h / 2);
       this.animationIndex = 1;
       if (state.current === state.game) {
         DIE.play();
@@ -329,7 +346,7 @@ let pipes = {
     this.spawnTimer++;
     if (this.position.length === 0 || this.spawnTimer >= gameConfig.spawnInterval) {
       this.position.push({
-        x: cvs.width,
+        x: GAME_WIDTH,
         y: gameConfig.pipeTopMin + Math.random() * (gameConfig.pipeTopMax - gameConfig.pipeTopMin)
       });
       this.spawnTimer = 0;
@@ -382,8 +399,8 @@ var score = {
       ctx.fillStyle = "white";
       ctx.strokeStyle = "black";
       ctx.textAlign = "center";
-      ctx.fillText(this.value, cvs.width / 2, 50);
-      ctx.strokeText(this.value, cvs.width / 2, 50);
+      ctx.fillText(this.value, GAME_WIDTH / 2, 50);
+      ctx.strokeText(this.value, GAME_WIDTH / 2, 50);
     } else if (state.current === state.over) {
       // Game Over screen
       gameOver.draw();
@@ -419,8 +436,10 @@ function update() {
 }
 
 function draw() {
+  ctx.setTransform(renderScale, 0, 0, renderScale, 0, 0);
+  ctx.imageSmoothingEnabled = false;
   ctx.fillStyle = '#70c5ce';
-  ctx.fillRect(0, 0, cvs.width, cvs.height);
+  ctx.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
   bg.draw();
   pipes.draw();
   fg.draw();
