@@ -2,7 +2,7 @@
 
 A simple yet fun **Flappy Bird clone** built with **HTML, CSS, and Vanilla JavaScript (Canvas API)**. The project recreates the nostalgic gameplay of the original Flappy Bird, complete with physics, animations, sound effects, and score tracking. A hosted **Supabase backend** provides a live global leaderboard with anonymous auth, Realtime updates, and Edge Function-based score submissions.
 
-🔗 **Live Demo**: [Flappy Bird](https://navidmirsoleimani.github.io/flappy-bird-js)
+🔗 **Live Demo**: [Flappy Bird](https://kathikalle-umma.vercel.app)
 
 ---
 
