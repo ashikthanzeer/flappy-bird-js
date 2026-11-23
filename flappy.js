@@ -34,12 +34,13 @@ var faceImg = new Image();
 faceImg.src = "./images/face.png";
 
 // ============================================================================
-// Web Audio API Sound Manager (zero-latency overlapping SFX + mobile unlock)
+// Sound Manager (non-overlapping voice/SFX playback + reliable mobile unlock)
 // ============================================================================
 var Sound = (function () {
   var AudioCtx = window.AudioContext || window.webkitAudioContext;
   var audioCtx = null;
   var buffers = {};
+  var activeSources = {};
   var fallbacks = {};
   var muted = localStorage.getItem('fb_muted') === '1';
 
@@ -89,24 +90,64 @@ var Sound = (function () {
     });
   }
 
-  function play(name, rate) {
+  function isPlaying(name) {
+    if (activeSources[name]) return true;
+    var el = fallbacks[name];
+    return !!(el && !el.paused && !el.ended);
+  }
+
+  function stop(name) {
+    if (activeSources[name]) {
+      try { activeSources[name].stop(0); } catch (e) {}
+      activeSources[name] = null;
+    }
+    var el = fallbacks[name];
+    if (el && !el.paused) {
+      try {
+        el.pause();
+        el.currentTime = 0;
+      } catch (e) {}
+    }
+  }
+
+  function stopAll() {
+    Object.keys(files).forEach(stop);
+  }
+
+  function play(name, options) {
     if (muted) return;
+    var opts = options || {};
+    var rate = opts.rate || 1;
+    var interrupt = opts.interrupt !== false;
+
+    if (!interrupt && isPlaying(name)) return;
+    if (interrupt) stop(name);
+
     var ctxAudio = ensureContext();
-    if (ctxAudio && buffers[name]) {
+    // Only use Web Audio when context is actively running so sounds never queue up while suspended
+    if (ctxAudio && ctxAudio.state === 'running' && buffers[name]) {
       try {
         var src = ctxAudio.createBufferSource();
         src.buffer = buffers[name];
-        if (rate) src.playbackRate.value = rate;
+        if (rate !== 1) src.playbackRate.value = rate;
         src.connect(ctxAudio.destination);
+        activeSources[name] = src;
+        src.onended = function () {
+          if (activeSources[name] === src) activeSources[name] = null;
+        };
         src.start(0);
         return;
-      } catch (e) {}
+      } catch (e) {
+        activeSources[name] = null;
+      }
     }
-    var base = fallbacks[name];
-    if (base) {
+
+    var el = fallbacks[name];
+    if (el) {
       try {
-        var clone = base.cloneNode();
-        clone.play().catch(function () {});
+        el.currentTime = 0;
+        var p = el.play();
+        if (p && typeof p.catch === 'function') p.catch(function () {});
       } catch (e) {}
     }
   }
@@ -114,7 +155,7 @@ var Sound = (function () {
   function playTone(freqStart, freqEnd, duration, type, volume) {
     if (muted) return;
     var ctxAudio = ensureContext();
-    if (!ctxAudio) return;
+    if (!ctxAudio || ctxAudio.state !== 'running') return;
     try {
       var now = ctxAudio.currentTime;
       var osc = ctxAudio.createOscillator();
@@ -133,12 +174,15 @@ var Sound = (function () {
 
   function setMuted(val) {
     muted = !!val;
+    if (muted) stopAll();
     localStorage.setItem('fb_muted', muted ? '1' : '0');
   }
 
   return {
     unlock: ensureContext,
     play: play,
+    stop: stop,
+    stopAll: stopAll,
     playTone: playTone,
     isMuted: function () { return muted; },
     setMuted: setMuted
@@ -401,22 +445,25 @@ function clickHandler() {
   Sound.unlock();
   switch (state.current) {
     case state.getReady:
+      Sound.stopAll();
       Sound.play('start');
       state.current = state.game;
-      bird.flap();
+      bird.flap(true);
       syncHUD();
       break;
     case state.game:
-      bird.flap();
+      bird.flap(false);
       break;
     default:
       if (performance.now() - gameOverAt < GAME_OVER_COOLDOWN_MS) return;
+      Sound.stopAll();
       resetRun();
       break;
   }
 }
 
 document.addEventListener('keydown', function (e) {
+  if (e.repeat) return;
   if (document.getElementById('lb-overlay')?.classList.contains('active')) return;
   if (e.target && e.target.matches('input, textarea, select, button, [contenteditable="true"]')) return;
   if (e.which === 32 || e.key === ' ' || e.code === 'Space') {
@@ -510,12 +557,8 @@ function triggerGameOver(hitPipe) {
   fx.flashAlpha = 0.75;
   triggerShake(14, 5);
   spawnParticles(bird.x, bird.y, 12, '#fde047', 2.6, 3);
-  if (hitPipe) {
-    Sound.play('hit');
-    setTimeout(function () { Sound.play('die'); }, 120);
-  } else {
-    Sound.play('die');
-  }
+  Sound.stopAll();
+  Sound.play(hitPipe ? 'hit' : 'die');
   finishRun(score.value);
   syncHUD();
 }
@@ -781,11 +824,13 @@ var bird = {
       }
     }
   },
-  flap: function () {
+  flap: function (silent) {
     this.speed = -this.jump;
     this.scaleX = 1.12;
     this.scaleY = 0.88;
-    Sound.play('flap', 0.96 + Math.random() * 0.08);
+    if (!silent) {
+      Sound.play('flap', { interrupt: false });
+    }
     spawnParticles(this.x - 10, this.y + 8, 4, 'rgba(255,255,255,0.85)', 1.4, 2.2);
   }
 };
@@ -966,7 +1011,7 @@ var pipes = {
 
         score.value += points;
         fx.scorePop = 1;
-        Sound.play('score', isPerfect ? Math.min(1.25, 1 + perfectStreak * 0.05) : 1);
+        Sound.play('score', { rate: isPerfect ? Math.min(1.25, 1 + perfectStreak * 0.05) : 1 });
 
         // Live Personal Best celebration!
         if (!score.pbAnnounced && score.best > 0 && score.value > score.best) {
