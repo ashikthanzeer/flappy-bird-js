@@ -2,22 +2,28 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <meta name="theme-color" content="#70c5ce">
     <title>Kathikalle Umma - Flappy Bird</title>
-    <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+    <script src="https://unpkg.com/@supabase/supabase-js@2.49.1"></script>
     <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; touch-action: manipulation; }
-        html, body { width: 100%; height: 100%; overflow: hidden; background: #222; }
+        * { margin: 0; padding: 0; box-sizing: border-box; touch-action: manipulation; -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; }
+        html, body { width: 100%; height: 100%; overflow: hidden; background: #141c24; }
         body { display: flex; justify-content: center; align-items: center; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
-        #game-wrapper { position: relative; width: min(100vw, 480px, calc(100vh * 2 / 3)); width: min(100vw, 480px, calc(100dvh * 2 / 3)); aspect-ratio: 2 / 3; overflow: hidden; background: linear-gradient(180deg, #70c5ce 0%, #4a9aaa 100%); }
+        #game-wrapper { position: relative; width: min(100vw, 480px, calc(100vh * 2 / 3)); width: min(100vw, 480px, calc(100dvh * 2 / 3)); aspect-ratio: 2 / 3; overflow: hidden; background: linear-gradient(180deg, #70c5ce 0%, #4a9aaa 100%); box-shadow: 0 12px 40px rgba(0,0,0,0.45); }
         canvas { display: block; width: 100%; height: 100%; border: none; }
-        #badge-panel { position: absolute; top: 10px; left: 10px; display: flex; gap: 6px; pointer-events: none; z-index: 10; }
-        .badge-icon { width: 28px; height: 28px; border-radius: 50%; border: 2px solid rgba(255,255,255,0.8); box-shadow: 0 2px 4px rgba(0,0,0,0.3); opacity: 0.4; transition: opacity 0.3s; }
-        .badge-icon.active { opacity: 1; }
-        #lb-open { position: absolute; top: 10px; right: 10px; z-index: 11; min-height: 42px; padding: 0 12px; border: 1px solid rgba(255,255,255,0.65); border-radius: 6px; background: rgba(10,30,45,0.78); color: #fff; font-size: 13px; font-weight: 700; cursor: pointer; text-shadow: 0 1px 2px rgba(0,0,0,0.45); }
+        #hud-left { position: absolute; top: max(10px, env(safe-area-inset-top)); left: 10px; display: flex; gap: 6px; z-index: 11; }
+        .hud-btn { min-height: 40px; padding: 0 11px; border: 1px solid rgba(255,255,255,0.65); border-radius: 8px; background: rgba(10,30,45,0.78); color: #fff; font-size: 12px; font-weight: 700; cursor: pointer; text-shadow: 0 1px 2px rgba(0,0,0,0.45); display: inline-flex; align-items: center; justify-content: center; gap: 4px; backdrop-filter: blur(4px); transition: transform 0.1s ease, background 0.15s ease, border-color 0.15s ease; }
+        .hud-btn:active { transform: scale(0.95); }
+        .hud-btn:hover, .hud-btn:focus-visible { background: rgba(10,30,45,0.96); outline: 2px solid #ffd700; outline-offset: 2px; }
+        #mode-toggle.chaos { background: linear-gradient(135deg, rgba(168, 42, 214, 0.9), rgba(236, 72, 153, 0.9)); border-color: #fde047; box-shadow: 0 0 12px rgba(236, 72, 153, 0.55); }
+        #mute-toggle { min-width: 40px; padding: 0 8px; font-size: 15px; }
+        #lb-open { position: absolute; top: max(10px, env(safe-area-inset-top)); right: 10px; z-index: 11; min-height: 40px; padding: 0 12px; border: 1px solid rgba(255,255,255,0.65); border-radius: 8px; background: rgba(10,30,45,0.78); color: #fff; font-size: 12px; font-weight: 700; cursor: pointer; text-shadow: 0 1px 2px rgba(0,0,0,0.45); backdrop-filter: blur(4px); }
         #lb-open:hover, #lb-open:focus-visible { background: rgba(10,30,45,0.96); outline: 2px solid #ffd700; outline-offset: 2px; }
-        #controls-hint { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); color: white; font-size: 14px; text-align: center; opacity: 0.9; pointer-events: none; text-shadow: 0 1px 2px rgba(0,0,0,0.5); z-index: 10; }
+        #share-btn { position: absolute; bottom: 92px; left: 50%; transform: translateX(-50%); z-index: 15; min-height: 42px; padding: 0 18px; border-radius: 999px; border: 2px solid #fff; background: linear-gradient(135deg, #f59e0b, #ef4444); color: #fff; font-size: 13px; font-weight: 800; letter-spacing: 0.3px; cursor: pointer; box-shadow: 0 4px 14px rgba(0,0,0,0.35); display: none; }
+        #share-btn.visible { display: inline-flex; align-items: center; gap: 6px; animation: fadeIn 0.2s ease; }
+        #share-btn:active { transform: translateX(-50%) scale(0.96); }
+        #controls-hint { position: absolute; bottom: max(12px, env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%); color: white; font-size: 13px; font-weight: 600; text-align: center; opacity: 0.92; pointer-events: none; text-shadow: 0 1px 3px rgba(0,0,0,0.65); z-index: 10; white-space: nowrap; }
 
         /* Leaderboard overlay */
         #lb-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(10, 30, 45, 0.92); z-index: 20; display: flex; flex-direction: column; align-items: center; padding: 20px 16px; overflow-y: auto; display: none; }
@@ -59,9 +65,13 @@
 <body>
     <div id="game-wrapper">
         <canvas id="mycanvas" width="320" height="480"></canvas>
-        <div id="badge-panel" aria-label="Achievement badges"></div>
+        <div id="hud-left">
+            <button id="mode-toggle" class="hud-btn" type="button" aria-label="Switch game mode">Classic</button>
+            <button id="mute-toggle" class="hud-btn" type="button" aria-label="Toggle sound">🔊</button>
+        </div>
         <button id="lb-open" type="button" aria-haspopup="dialog" aria-controls="lb-overlay">Leaderboard</button>
-        <div id="controls-hint">Tap or Press Space</div>
+        <button id="share-btn" type="button" aria-label="Share your score">Share Score</button>
+        <div id="controls-hint">Tap anywhere to flap</div>
 
         <div id="game-status" aria-live="polite">
             <div class="status-text"></div>
