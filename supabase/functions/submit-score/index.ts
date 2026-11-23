@@ -64,7 +64,11 @@ serve(async (req) => {
     if (!body || typeof body !== "object" || Array.isArray(body)) {
       return jsonResponse({ error: "Invalid request body" }, 400);
     }
-    const { score, display_name, run_id } = body as Record<string, unknown>;
+    const { score, display_name, run_id, mode } = body as Record<string, unknown>;
+    const normalizedMode = mode === undefined || mode === null ? "classic" : String(mode).toLowerCase();
+    if (normalizedMode !== "classic" && normalizedMode !== "chaos") {
+      return jsonResponse({ error: "Invalid mode" }, 400);
+    }
 
     if (typeof score !== "number" || !Number.isSafeInteger(score) || score < 0 || score > MAX_SCORE) {
       return jsonResponse({ error: "Invalid score" }, 400);
@@ -118,6 +122,7 @@ serve(async (req) => {
         display_name: name,
         score,
         run_id,
+        mode: normalizedMode,
       }, {
         onConflict: "player_id,run_id",
         ignoreDuplicates: true,

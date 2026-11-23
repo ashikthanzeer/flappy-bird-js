@@ -21,12 +21,17 @@
   let pollTimer = null;
   let displayName = localStorage.getItem('lb_display_name') || '';
   let submissionStatus = 'idle';
-  let topTen = [];
+  let currentMode = 'classic';
+  const topTenByMode = { classic: [], chaos: [] };
   let initPromise = null;
   let processingPromise = null;
   let requestVersion = 0;
   let isVisible = false;
   const runResults = new Map();
+
+  function normalizeMode(mode) {
+    return mode === 'chaos' ? 'chaos' : 'classic';
+  }
 
   // Helper: safe name validation (same rules as server)
   function isValidName(name) {
@@ -38,9 +43,10 @@
     return true;
   }
 
-  function publishChange(status, error) {
+  function publishChange(status, error, mode) {
+    const activeMode = normalizeMode(mode || currentMode);
     window.dispatchEvent(new CustomEvent('leaderboard:change', {
-      detail: { rows: topTen, status, error: error || '' }
+      detail: { rows: topTenByMode[activeMode], mode: activeMode, status, error: error || '' }
     }));
   }
 
@@ -85,7 +91,7 @@
         Number.isSafeInteger(run.score) && run.score >= 0 && run.score <= 999 &&
         isValidName(run.display_name) &&
         Number.isInteger(run.attempts) && run.attempts >= 0 && run.attempts <= MAX_ATTEMPTS
-      ).slice(0, MAX_PENDING_RUNS);
+      ).map((run) => ({ ...run, mode: normalizeMode(run.mode) })).slice(0, MAX_PENDING_RUNS);
     } catch (e) {
       return [];
     }
@@ -107,31 +113,34 @@
     });
   }
 
-  async function fetchTopTen() {
+  async function fetchTopTen(mode) {
+    const targetMode = normalizeMode(mode || currentMode);
     const version = ++requestVersion;
     if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
-      publishChange('error', 'Supabase configuration is missing.');
-      return topTen;
+      publishChange('error', 'Supabase configuration is missing.', targetMode);
+      return topTenByMode[targetMode];
     }
 
-    publishChange('loading');
+    if (targetMode === currentMode) publishChange('loading', '', targetMode);
     try {
-      const response = await fetch(`${SUPABASE_URL.replace(/\/+$/, '')}/functions/v1/get-top10`, {
+      const response = await fetch(`${SUPABASE_URL.replace(/\/+$/, '')}/functions/v1/get-top10?mode=${encodeURIComponent(targetMode)}`, {
         method: 'GET',
         headers: { apikey: SUPABASE_ANON_KEY }
       });
       const json = await response.json();
       if (!response.ok) throw new Error(json?.error || `HTTP ${response.status}`);
       if (!json || !Array.isArray(json.data)) throw new Error('Invalid leaderboard response.');
-      if (version === requestVersion) {
-        topTen = json.data;
-        publishChange('success');
+      topTenByMode[targetMode] = json.data;
+      if (version === requestVersion && targetMode === currentMode) {
+        publishChange('success', '', targetMode);
       }
-      return topTen;
+      return topTenByMode[targetMode];
     } catch (error) {
       console.warn('Fetch top 10 failed:', error);
-      if (version === requestVersion) publishChange('error', error.message || 'Leaderboard request failed.');
-      return topTen;
+      if (version === requestVersion && targetMode === currentMode) {
+        publishChange('error', error.message || 'Leaderboard request failed.', targetMode);
+      }
+      return topTenByMode[targetMode];
     }
   }
 
@@ -197,7 +206,8 @@
                 body: JSON.stringify({
                   score: queuedRun.score,
                   display_name: queuedRun.display_name,
-                  run_id: queuedRun.run_id
+                  run_id: queuedRun.run_id,
+                  mode: normalizeMode(queuedRun.mode)
                 }),
                 signal: controller.signal
               });
@@ -210,7 +220,7 @@
               result = json.duplicate ? { duplicate: true } : { success: true };
               removePendingRun(queuedRun.run_id);
               submissionStatus = json.duplicate ? 'duplicate' : 'success';
-              fetchTopTen();
+              fetchTopTen(queuedRun.mode || currentMode);
               break;
             }
 
@@ -267,11 +277,12 @@
     }
   }
 
-  async function submitRun(score, runId) {
+  async function submitRun(score, runId, mode) {
     if (!Number.isSafeInteger(score) || score < 0 || score > 999) return { error: 'Invalid score.' };
     const name = displayName || 'Player';
     if (!isValidName(name)) return { error: 'Invalid display name.' };
     runId = runId || createRunId();
+    const runMode = normalizeMode(mode);
 
     await initLeaderboard();
     if (!supabase) return { error: 'Leaderboard is not configured.' };
@@ -280,7 +291,7 @@
     const existing = runs.find((run) => run.run_id === runId);
     if (!existing) {
       if (runs.length >= MAX_PENDING_RUNS) return { error: 'Pending submission queue is full.' };
-      runs.push({ run_id: runId, score, display_name: name, attempts: 0 });
+      runs.push({ run_id: runId, score, display_name: name, mode: runMode, attempts: 0 });
       writePendingRuns(runs);
     }
     submissionStatus = 'submitting';
@@ -364,6 +375,13 @@
   window.Leaderboard = {
     init: initLeaderboard,
     submitRun,
+    setMode: function (mode) {
+      const next = normalizeMode(mode);
+      currentMode = next;
+      publishChange('loading', '', currentMode);
+      return fetchTopTen(currentMode);
+    },
+    getMode: function () { return currentMode; },
     setDisplayName: function (name) {
       const normalizedName = name ? name.trim() : '';
       if (!isValidName(normalizedName)) return false;
@@ -374,8 +392,8 @@
     getDisplayName: function () { return displayName || localStorage.getItem('lb_display_name') || ''; },
     getPlayerId: function () { return localStorage.getItem('lb_player_id') || ''; },
     getStatus: function () { return submissionStatus; },
-    getTopTen: function () { return topTen; },
-    refresh: fetchTopTen,
+    getTopTen: function (mode) { return topTenByMode[normalizeMode(mode || currentMode)]; },
+    refresh: function (mode) { return fetchTopTen(mode || currentMode); },
     setVisible,
     unsubscribe: function () { unsubscribeRealtime(); },
     isOffline: function () { return !navigator.onLine; },

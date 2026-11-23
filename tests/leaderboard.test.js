@@ -231,4 +231,38 @@ test('page exposes visible controls for opening the leaderboard and saving a dis
   assert.match(html, /id="lb-name-input"/);
   assert.match(html, /id="lb-save-name"/);
   assert.match(html, /id="lb-table-body"/);
+  assert.match(html, /id="lb-tab-classic"/);
+  assert.match(html, /id="lb-tab-chaos"/);
+});
+
+test('classic and chaos leaderboards submit and fetch separate mode scores', async () => {
+  const harness = createHarness((url) => {
+    if (url.endsWith('/submit-score')) return jsonResponse({ success: true, data: {} });
+    if (url.includes('mode=chaos')) return jsonResponse({ data: [{ display_name: 'ChaosKing', score: 42, mode: 'chaos' }] });
+    return jsonResponse({ data: [{ display_name: 'ClassicAce', score: 21, mode: 'classic' }] });
+  });
+  await harness.leaderboard.init();
+
+  const chaosRunId = '66666666-6666-4666-8666-666666666666';
+  const res = await harness.leaderboard.submitRun(42, chaosRunId, 'chaos');
+  assert.equal(res.success, true);
+
+  const submitReq = harness.requests.find((entry) => entry.url.endsWith('/submit-score'));
+  assert.equal(JSON.parse(submitReq.options.body).mode, 'chaos');
+
+  await harness.leaderboard.setMode('chaos');
+  assert.equal(harness.leaderboard.getMode(), 'chaos');
+  assert.equal(harness.leaderboard.getTopTen()[0].display_name, 'ChaosKing');
+  assert.equal(harness.leaderboard.getTopTen('classic')[0].display_name, 'ClassicAce');
+});
+
+test('SQL migration and Edge Functions enforce classic and chaos modes', () => {
+  const migration = fs.readFileSync(path.join(__dirname, '..', 'supabase/sql/04_game_modes.sql'), 'utf8');
+  const getHandler = fs.readFileSync(path.join(__dirname, '..', 'supabase/functions/get-top10/index.ts'), 'utf8');
+  const submitHandler = fs.readFileSync(path.join(__dirname, '..', 'supabase/functions/submit-score/index.ts'), 'utf8');
+
+  assert.match(migration, /ADD COLUMN IF NOT EXISTS mode TEXT/i);
+  assert.match(migration, /CHECK \(mode IN \('classic', 'chaos'\)\)/i);
+  assert.match(getHandler, /\.eq\("mode",\s*rawMode\)/);
+  assert.match(submitHandler, /mode:\s*normalizedMode/);
 });

@@ -30,8 +30,12 @@
         #lb-overlay.active { display: flex; animation: fadeIn 0.2s ease; }
         @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 
-        #lb-overlay h2 { color: #fff; font-size: 22px; margin-bottom: 8px; text-shadow: 0 2px 4px rgba(0,0,0,0.4); }
-        #lb-overlay .subtitle { color: rgba(255,255,255,0.85); font-size: 13px; margin-bottom: 14px; }
+        #lb-overlay h2 { color: #fff; font-size: 22px; margin-bottom: 6px; text-shadow: 0 2px 4px rgba(0,0,0,0.4); }
+        #lb-overlay .subtitle { color: rgba(255,255,255,0.85); font-size: 13px; margin-bottom: 12px; }
+        #lb-tabs { display: flex; gap: 8px; margin-bottom: 12px; width: 100%; max-width: 360px; }
+        .lb-tab { flex: 1; min-height: 38px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.25); background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.8); font-size: 13px; font-weight: 700; cursor: pointer; transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease; }
+        .lb-tab.active[data-mode="classic"] { background: #ffd700; border-color: #ffd700; color: #1e293b; }
+        .lb-tab.active[data-mode="chaos"] { background: linear-gradient(135deg, #a855f7, #ec4899); border-color: #fde047; color: #fff; }
         #lb-name-row { display: flex; gap: 8px; align-items: center; margin-bottom: 14px; width: 100%; max-width: 360px; }
         #lb-name-row input { flex: 1; padding: 10px 12px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.25); background: rgba(255,255,255,0.12); color: #fff; font-size: 15px; outline: none; }
         #lb-name-row input:focus { border-color: rgba(255,255,255,0.7); background: rgba(255,255,255,0.18); }
@@ -80,7 +84,11 @@
 
         <div id="lb-overlay" role="dialog" aria-label="Leaderboard" aria-modal="true">
             <h2>Leaderboard</h2>
-            <p class="subtitle">Top 10 global scores</p>
+            <p class="subtitle" id="lb-subtitle">Top 10 Classic scores</p>
+            <div id="lb-tabs" role="tablist" aria-label="Leaderboard mode">
+                <button id="lb-tab-classic" class="lb-tab active" data-mode="classic" type="button" role="tab" aria-selected="true">Classic</button>
+                <button id="lb-tab-chaos" class="lb-tab" data-mode="chaos" type="button" role="tab" aria-selected="false">Chaos+</button>
+            </div>
             <div id="lb-name-row">
                 <input type="text" id="lb-name-input" placeholder="Your name (max 20 chars)" aria-label="Display name" maxlength="20" autocomplete="off" />
                 <button id="lb-save-name" aria-label="Save name">Save</button>
@@ -109,6 +117,9 @@
     <script>
         // UI wiring
         const lbOverlay = document.getElementById('lb-overlay');
+        const lbSubtitle = document.getElementById('lb-subtitle');
+        const lbTabClassic = document.getElementById('lb-tab-classic');
+        const lbTabChaos = document.getElementById('lb-tab-chaos');
         const lbNameInput = document.getElementById('lb-name-input');
         const lbSaveBtn = document.getElementById('lb-save-name');
         const lbIdentity = document.getElementById('lb-identity');
@@ -159,13 +170,43 @@
             setTimeout(() => gameStatus.classList.remove('active'), 3500);
         }
 
+        function syncLeaderboardTabs(mode) {
+            const active = mode === 'chaos' ? 'chaos' : 'classic';
+            if (lbTabClassic) {
+                lbTabClassic.classList.toggle('active', active === 'classic');
+                lbTabClassic.setAttribute('aria-selected', String(active === 'classic'));
+            }
+            if (lbTabChaos) {
+                lbTabChaos.classList.toggle('active', active === 'chaos');
+                lbTabChaos.setAttribute('aria-selected', String(active === 'chaos'));
+            }
+            if (lbSubtitle) {
+                lbSubtitle.textContent = active === 'chaos' ? 'Top 10 Chaos+ scores' : 'Top 10 Classic scores';
+            }
+        }
+
         function showLeaderboard() {
+            const mode = window.getGameMode ? window.getGameMode() : 'classic';
+            syncLeaderboardTabs(mode);
             lbOverlay.classList.add('active');
             if (window.Leaderboard) {
                 window.Leaderboard.setVisible(true);
-                window.Leaderboard.refresh();
+                window.Leaderboard.setMode(mode);
             }
             updateLeaderboardUI();
+        }
+
+        if (lbTabClassic) {
+            lbTabClassic.addEventListener('click', () => {
+                syncLeaderboardTabs('classic');
+                if (window.Leaderboard) window.Leaderboard.setMode('classic');
+            });
+        }
+        if (lbTabChaos) {
+            lbTabChaos.addEventListener('click', () => {
+                syncLeaderboardTabs('chaos');
+                if (window.Leaderboard) window.Leaderboard.setMode('chaos');
+            });
         }
 
         function hideLeaderboard() {

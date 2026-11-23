@@ -34,16 +34,14 @@ var faceImg = new Image();
 faceImg.src = "./images/face.png";
 
 // ============================================================================
-// Sound Manager (non-overlapping voice/SFX playback + reliable mobile unlock)
+// Self-Healing HTMLAudio Sound Manager (immune to mobile app-switch audio loss)
 // ============================================================================
 var Sound = (function () {
   var AudioCtx = window.AudioContext || window.webkitAudioContext;
-  var audioCtx = null;
-  var rawBuffers = {};
-  var buffers = {};
-  var activeSources = {};
-  var fallbacks = {};
+  var synthCtx = null;
+  var players = {};
   var muted = localStorage.getItem('fb_muted') === '1';
+  var needsRecovery = false;
 
   var files = {
     score: 'audios/score.wav',
@@ -53,192 +51,126 @@ var Sound = (function () {
     start: 'audios/start.wav'
   };
 
-  Object.keys(files).forEach(function (name) {
+  function createAudio(name) {
     var a = new Audio();
     a.src = files[name];
     a.preload = 'auto';
-    fallbacks[name] = a;
+    a.setAttribute('playsinline', '');
+    return a;
+  }
+
+  Object.keys(files).forEach(function (name) {
+    players[name] = createAudio(name);
   });
 
-  function decodeForContext(ctxRef, name, arrayBuf) {
-    if (!ctxRef || !arrayBuf) return;
-    try {
-      ctxRef.decodeAudioData(arrayBuf.slice(0), function (decoded) {
-        if (audioCtx === ctxRef) buffers[name] = decoded;
-      }, function () {});
-    } catch (e) {}
-  }
-
-  function loadBuffers(ctxRef) {
-    if (!ctxRef || typeof fetch !== 'function') return;
+  function recoverAudioElements() {
+    needsRecovery = false;
     Object.keys(files).forEach(function (name) {
-      if (rawBuffers[name]) {
-        decodeForContext(ctxRef, name, rawBuffers[name]);
-        return;
+      var el = players[name];
+      if (!el || el.error || el.readyState === 0) {
+        players[name] = createAudio(name);
+        try { players[name].load(); } catch (e) {}
       }
-      fetch(files[name])
-        .then(function (res) { return res.ok ? res.arrayBuffer() : null; })
-        .then(function (arr) {
-          if (!arr) return;
-          rawBuffers[name] = arr;
-          decodeForContext(ctxRef, name, arr);
-        })
-        .catch(function () {});
     });
+    if (synthCtx && synthCtx.state !== 'running') {
+      try { synthCtx.close(); } catch (e) {}
+      synthCtx = null;
+    }
   }
 
-  function wakeAudioContext(ctxRef) {
-    if (!ctxRef) return;
-    try {
-      var resumePromise = ctxRef.resume();
-      if (resumePromise && typeof resumePromise.catch === 'function') {
-        resumePromise.catch(function () {});
-      }
-      // 1-sample silent buffer reliably wakes iOS Safari after 'interrupted' state
-      var silent = ctxRef.createBuffer(1, 1, 22050);
-      var src = ctxRef.createBufferSource();
-      src.buffer = silent;
-      src.connect(ctxRef.destination);
-      src.start(0);
-    } catch (e) {}
-  }
-
-  function ensureContext() {
-    if (!AudioCtx) return null;
-    if (audioCtx && audioCtx.state === 'closed') {
-      audioCtx = null;
-      buffers = {};
-      activeSources = {};
+  function unlock() {
+    if (needsRecovery) recoverAudioElements();
+    if (AudioCtx && !synthCtx) {
+      try { synthCtx = new AudioCtx(); } catch (e) { synthCtx = null; }
     }
-    if (!audioCtx) {
-      try {
-        audioCtx = new AudioCtx();
-        buffers = {};
-        activeSources = {};
-        loadBuffers(audioCtx);
-      } catch (e) {
-        audioCtx = null;
-      }
+    if (synthCtx && synthCtx.state === 'suspended') {
+      synthCtx.resume().catch(function () {});
     }
-    // Handles both 'suspended' and iOS Safari's 'interrupted' state
-    if (audioCtx && audioCtx.state !== 'running') {
-      wakeAudioContext(audioCtx);
-    }
-    return audioCtx;
   }
 
   function isPlaying(name) {
-    if (activeSources[name]) {
-      if (!audioCtx || audioCtx.state !== 'running') {
-        activeSources[name] = null;
-      } else {
-        return true;
-      }
-    }
-    var el = fallbacks[name];
-    return !!(el && !el.paused && !el.ended);
+    var el = players[name];
+    return !!(el && !el.paused && !el.ended && el.readyState > 0 && !el.error);
   }
-
-  function stop(name) {
-    if (activeSources[name]) {
-      try { activeSources[name].stop(0); } catch (e) {}
-      activeSources[name] = null;
-    }
-    var el = fallbacks[name];
-    if (el && !el.paused) {
-      try {
-        el.pause();
-        el.currentTime = 0;
-      } catch (e) {}
-    }
-  }
-
-  function stopAll() {
-    Object.keys(files).forEach(stop);
-  }
-
-  function recoverAfterBackground() {
-    stopAll();
-    if (!muted) ensureContext();
-  }
-
-  document.addEventListener('visibilitychange', function () {
-    if (document.hidden) {
-      stopAll();
-    } else {
-      recoverAfterBackground();
-    }
-  });
-  window.addEventListener('pagehide', stopAll);
-  window.addEventListener('pageshow', recoverAfterBackground);
-  window.addEventListener('focus', function () {
-    if (!muted && audioCtx && audioCtx.state !== 'running') {
-      ensureContext();
-    }
-  });
-  // Ensure mobile touch gestures always wake an interrupted AudioContext
-  window.addEventListener('touchstart', function () {
-    if (!muted && audioCtx && audioCtx.state !== 'running') {
-      ensureContext();
-    }
-  }, { passive: true });
 
   function play(name, options) {
-    if (muted) return;
+    if (muted || !files[name]) return;
+    if (needsRecovery) recoverAudioElements();
+
     var opts = options || {};
-    var rate = opts.rate || 1;
     var interrupt = opts.interrupt !== false;
+    var el = players[name];
 
-    if (!interrupt && isPlaying(name)) return;
-    if (interrupt) stop(name);
-
-    var ctxAudio = ensureContext();
-    // Only use Web Audio when context is actively running so sounds never queue up while suspended
-    if (ctxAudio && ctxAudio.state === 'running' && buffers[name]) {
-      try {
-        var src = ctxAudio.createBufferSource();
-        src.buffer = buffers[name];
-        if (rate !== 1) src.playbackRate.value = rate;
-        src.connect(ctxAudio.destination);
-        activeSources[name] = src;
-        src.onended = function () {
-          if (activeSources[name] === src) activeSources[name] = null;
-        };
-        src.start(0);
-        return;
-      } catch (e) {
-        activeSources[name] = null;
-      }
+    if (!el || el.error) {
+      el = createAudio(name);
+      players[name] = el;
     }
 
-    var el = fallbacks[name];
-    if (el) {
+    if (!interrupt && isPlaying(name)) return;
+
+    // Only seek if metadata is loaded; never let InvalidStateError abort play()
+    if (interrupt && el.readyState > 0) {
+      try { el.currentTime = 0; } catch (e) {}
+    }
+
+    try {
+      var promise = el.play();
+      if (promise && typeof promise.catch === 'function') {
+        promise.catch(function () {
+          // If OS reclaimed the media pipeline after app switch, recreate and retry immediately
+          var fresh = createAudio(name);
+          players[name] = fresh;
+          try {
+            var retry = fresh.play();
+            if (retry && typeof retry.catch === 'function') retry.catch(function () {});
+          } catch (e2) {}
+        });
+      }
+    } catch (e) {
+      var fresh = createAudio(name);
+      players[name] = fresh;
       try {
-        el.currentTime = 0;
-        var p = el.play();
-        if (p && typeof p.catch === 'function') p.catch(function () {});
-      } catch (e) {}
+        var retry = fresh.play();
+        if (retry && typeof retry.catch === 'function') retry.catch(function () {});
+      } catch (e2) {}
     }
   }
 
   function playTone(freqStart, freqEnd, duration, type, volume) {
-    if (muted) return;
-    var ctxAudio = ensureContext();
-    if (!ctxAudio || ctxAudio.state !== 'running') return;
+    if (muted || !AudioCtx) return;
     try {
-      var now = ctxAudio.currentTime;
-      var osc = ctxAudio.createOscillator();
-      var gain = ctxAudio.createGain();
+      if (!synthCtx || synthCtx.state === 'closed' || synthCtx.state === 'interrupted') {
+        if (synthCtx) {
+          try { synthCtx.close(); } catch (e) {}
+        }
+        synthCtx = new AudioCtx();
+      }
+      if (synthCtx.state === 'suspended') {
+        synthCtx.resume().catch(function () {});
+      }
+      if (synthCtx.state !== 'running') return;
+      var now = synthCtx.currentTime;
+      var osc = synthCtx.createOscillator();
+      var gain = synthCtx.createGain();
       osc.type = type || 'sine';
       osc.frequency.setValueAtTime(freqStart, now);
       osc.frequency.exponentialRampToValueAtTime(Math.max(freqEnd, 40), now + duration);
       gain.gain.setValueAtTime(volume || 0.14, now);
       gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
       osc.connect(gain);
-      gain.connect(ctxAudio.destination);
+      gain.connect(synthCtx.destination);
       osc.start(now);
       osc.stop(now + duration);
     } catch (e) {}
+  }
+
+  function stopAll() {
+    Object.keys(files).forEach(function (name) {
+      var el = players[name];
+      if (el && !el.paused) {
+        try { el.pause(); } catch (e) {}
+      }
+    });
   }
 
   function setMuted(val) {
@@ -247,10 +179,21 @@ var Sound = (function () {
     localStorage.setItem('fb_muted', muted ? '1' : '0');
   }
 
+  // Flag recovery on app switch without killing music while playing
+  document.addEventListener('visibilitychange', function () {
+    if (document.hidden) {
+      needsRecovery = true;
+    } else {
+      needsRecovery = true;
+    }
+  });
+  window.addEventListener('pageshow', function () {
+    needsRecovery = true;
+  });
+
   return {
-    unlock: ensureContext,
+    unlock: unlock,
     play: play,
-    stop: stop,
     stopAll: stopAll,
     playTone: playTone,
     isMuted: function () { return muted; },
@@ -269,6 +212,7 @@ var state = {
 };
 
 var gameMode = localStorage.getItem('fb_mode') === 'chaos' ? 'chaos' : 'classic';
+window.getGameMode = function () { return gameMode; };
 var gameOverAt = 0;
 var GAME_OVER_COOLDOWN_MS = 550;
 
@@ -514,8 +458,7 @@ function clickHandler() {
   Sound.unlock();
   switch (state.current) {
     case state.getReady:
-      Sound.stopAll();
-      Sound.play('start');
+      Sound.play('start', { interrupt: false });
       state.current = state.game;
       bird.flap(true);
       syncHUD();
@@ -525,7 +468,6 @@ function clickHandler() {
       break;
     default:
       if (performance.now() - gameOverAt < GAME_OVER_COOLDOWN_MS) return;
-      Sound.stopAll();
       resetRun();
       break;
   }
@@ -626,7 +568,6 @@ function triggerGameOver(hitPipe) {
   fx.flashAlpha = 0.75;
   triggerShake(14, 5);
   spawnParticles(bird.x, bird.y, 12, '#fde047', 2.6, 3);
-  Sound.stopAll();
   Sound.play(hitPipe ? 'hit' : 'die');
   finishRun(score.value);
   syncHUD();
@@ -657,11 +598,7 @@ function finishRun(finalScore) {
     gameOverQuip = pickRandom(QUIPS_HIGH);
   }
 
-  // Global leaderboard only tracks Classic personal bests (> 0)
-  if (gameMode !== 'classic') {
-    if (isNewPB) showStatusToast('New Chaos+ Best: ' + finalScore + '!', 'Chaos+ scores are saved locally');
-    return;
-  }
+  // Submit Personal Bests (> 0) to the active mode's leaderboard (Classic or Chaos+)
   if (!isNewPB) {
     return;
   }
@@ -675,13 +612,14 @@ function finishRun(finalScore) {
   localStorage.setItem("lb_last_run_id", runId);
 
   if (window.Leaderboard && typeof window.Leaderboard.submitRun === 'function') {
-    window.Leaderboard.submitRun(finalScore, runId).then(function (res) {
-      var msg = 'New PB submitted!';
+    var modeLabel = gameMode === 'chaos' ? 'Chaos+' : 'Classic';
+    window.Leaderboard.submitRun(finalScore, runId, gameMode).then(function (res) {
+      var msg = 'New ' + modeLabel + ' PB submitted!';
       var sub = '';
       if (res && res.duplicate) {
-        msg = 'PB saved (duplicate prevented)';
+        msg = modeLabel + ' PB saved (duplicate prevented)';
       } else if (res && res.success) {
-        msg = 'New Personal Best submitted!';
+        msg = 'New ' + modeLabel + ' Personal Best submitted!';
       } else if (res && res.offline) {
         msg = 'Offline - PB saved for retry';
         sub = 'Will sync when back online';

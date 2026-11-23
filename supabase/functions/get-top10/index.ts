@@ -29,9 +29,16 @@ serve(async (req) => {
   }
 
   try {
+    const url = new URL(req.url);
+    const rawMode = (url.searchParams.get("mode") || "classic").toLowerCase();
+    if (rawMode !== "classic" && rawMode !== "chaos") {
+      return jsonResponse({ error: "Invalid mode" }, 400);
+    }
+
     const { data, error } = await supabase
       .from("leaderboard_scores")
-      .select("id, display_name, score, created_at")
+      .select("id, display_name, score, mode, created_at")
+      .eq("mode", rawMode)
       .order("score", { ascending: false })
       .order("created_at", { ascending: true })
       .limit(10);
