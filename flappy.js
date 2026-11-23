@@ -39,6 +39,7 @@ faceImg.src = "./images/face.png";
 var Sound = (function () {
   var AudioCtx = window.AudioContext || window.webkitAudioContext;
   var audioCtx = null;
+  var rawBuffers = {};
   var buffers = {};
   var activeSources = {};
   var fallbacks = {};
@@ -59,39 +60,81 @@ var Sound = (function () {
     fallbacks[name] = a;
   });
 
-  function ensureContext() {
-    if (!AudioCtx) return null;
-    if (!audioCtx) {
-      try {
-        audioCtx = new AudioCtx();
-        loadBuffers();
-      } catch (e) {
-        audioCtx = null;
-      }
-    }
-    if (audioCtx && audioCtx.state === 'suspended') {
-      audioCtx.resume().catch(function () {});
-    }
-    return audioCtx;
+  function decodeForContext(ctxRef, name, arrayBuf) {
+    if (!ctxRef || !arrayBuf) return;
+    try {
+      ctxRef.decodeAudioData(arrayBuf.slice(0), function (decoded) {
+        if (audioCtx === ctxRef) buffers[name] = decoded;
+      }, function () {});
+    } catch (e) {}
   }
 
-  function loadBuffers() {
-    if (!audioCtx || typeof fetch !== 'function') return;
+  function loadBuffers(ctxRef) {
+    if (!ctxRef || typeof fetch !== 'function') return;
     Object.keys(files).forEach(function (name) {
+      if (rawBuffers[name]) {
+        decodeForContext(ctxRef, name, rawBuffers[name]);
+        return;
+      }
       fetch(files[name])
         .then(function (res) { return res.ok ? res.arrayBuffer() : null; })
         .then(function (arr) {
-          if (!arr || !audioCtx) return;
-          audioCtx.decodeAudioData(arr, function (decoded) {
-            buffers[name] = decoded;
-          }, function () {});
+          if (!arr) return;
+          rawBuffers[name] = arr;
+          decodeForContext(ctxRef, name, arr);
         })
         .catch(function () {});
     });
   }
 
+  function wakeAudioContext(ctxRef) {
+    if (!ctxRef) return;
+    try {
+      var resumePromise = ctxRef.resume();
+      if (resumePromise && typeof resumePromise.catch === 'function') {
+        resumePromise.catch(function () {});
+      }
+      // 1-sample silent buffer reliably wakes iOS Safari after 'interrupted' state
+      var silent = ctxRef.createBuffer(1, 1, 22050);
+      var src = ctxRef.createBufferSource();
+      src.buffer = silent;
+      src.connect(ctxRef.destination);
+      src.start(0);
+    } catch (e) {}
+  }
+
+  function ensureContext() {
+    if (!AudioCtx) return null;
+    if (audioCtx && audioCtx.state === 'closed') {
+      audioCtx = null;
+      buffers = {};
+      activeSources = {};
+    }
+    if (!audioCtx) {
+      try {
+        audioCtx = new AudioCtx();
+        buffers = {};
+        activeSources = {};
+        loadBuffers(audioCtx);
+      } catch (e) {
+        audioCtx = null;
+      }
+    }
+    // Handles both 'suspended' and iOS Safari's 'interrupted' state
+    if (audioCtx && audioCtx.state !== 'running') {
+      wakeAudioContext(audioCtx);
+    }
+    return audioCtx;
+  }
+
   function isPlaying(name) {
-    if (activeSources[name]) return true;
+    if (activeSources[name]) {
+      if (!audioCtx || audioCtx.state !== 'running') {
+        activeSources[name] = null;
+      } else {
+        return true;
+      }
+    }
     var el = fallbacks[name];
     return !!(el && !el.paused && !el.ended);
   }
@@ -113,6 +156,32 @@ var Sound = (function () {
   function stopAll() {
     Object.keys(files).forEach(stop);
   }
+
+  function recoverAfterBackground() {
+    stopAll();
+    if (!muted) ensureContext();
+  }
+
+  document.addEventListener('visibilitychange', function () {
+    if (document.hidden) {
+      stopAll();
+    } else {
+      recoverAfterBackground();
+    }
+  });
+  window.addEventListener('pagehide', stopAll);
+  window.addEventListener('pageshow', recoverAfterBackground);
+  window.addEventListener('focus', function () {
+    if (!muted && audioCtx && audioCtx.state !== 'running') {
+      ensureContext();
+    }
+  });
+  // Ensure mobile touch gestures always wake an interrupted AudioContext
+  window.addEventListener('touchstart', function () {
+    if (!muted && audioCtx && audioCtx.state !== 'running') {
+      ensureContext();
+    }
+  }, { passive: true });
 
   function play(name, options) {
     if (muted) return;
