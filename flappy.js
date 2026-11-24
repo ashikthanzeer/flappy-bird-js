@@ -219,11 +219,11 @@ var GAME_OVER_COOLDOWN_MS = 550;
 var gameConfig = {
   gravity: 0.12,
   jump: 4.4,
-  pipeDx: 1.5,
-  gap: 145,
-  pipeTopMin: -235,
-  pipeTopMax: -145,
-  spawnInterval: 120
+  pipeDx: 1.38,
+  gap: 162,
+  pipeTopMin: -225,
+  pipeTopMax: -155,
+  spawnInterval: 132
 };
 
 // Juice / FX state
@@ -783,6 +783,12 @@ var bird = {
     }
     ctx.restore();
   },
+  getGroundHalfHeight: function () {
+    var sinR = Math.sin(this.rotation);
+    var cosR = Math.cos(this.rotation);
+    // Uses rotated ellipse extent (-1px visual tuck) so the face sits flush on the ground at any angle
+    return Math.hypot(sinR * (this.w / 2 - 1), cosR * (this.h / 2 - 1));
+  },
   update: function (step) {
     // Spring squash/stretch back to 1
     var spring = Math.min(1, 0.2 * step);
@@ -814,8 +820,9 @@ var bird = {
         spawnParticles(this.x - 10, this.y + 4, 1, score.value >= 20 ? '#fde047' : '#f472b6', 0.8, 2);
       }
 
-      if (this.y + this.h / 2 >= GAME_HEIGHT - fg.h) {
-        this.y = GAME_HEIGHT - fg.h - (this.h / 2);
+      var groundLimit = GAME_HEIGHT - fg.h - this.getGroundHalfHeight();
+      if (this.y >= groundLimit) {
+        this.y = groundLimit;
         triggerGameOver(false);
       }
       if (this.y - this.radius <= 0) {
@@ -823,11 +830,14 @@ var bird = {
         triggerGameOver(false);
       }
     } else if (state.current === state.over) {
-      // Tumble to the ground on death instead of freezing mid-air
-      if (this.y + this.h / 2 < GAME_HEIGHT - fg.h) {
+      // Tumble to the ground and settle flush with zero gap
+      this.rotation = Math.min(90 * degree, this.rotation + 6 * degree * step);
+      var restY = GAME_HEIGHT - fg.h - this.getGroundHalfHeight();
+      if (this.y < restY) {
         this.speed += this.gravity * 1.35 * step;
-        this.y = Math.min(GAME_HEIGHT - fg.h - (this.h / 2), this.y + this.speed * step);
-        this.rotation = Math.min(90 * degree, this.rotation + 6 * degree * step);
+        this.y = Math.min(restY, this.y + Math.max(this.speed, 1.5) * step);
+      } else {
+        this.y = restY;
       }
     }
   },
